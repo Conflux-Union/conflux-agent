@@ -21,6 +21,7 @@ import { RepositoryStore } from "./store";
 import { planCommitHistoryAssignment } from "./assignment";
 import { isClearlyOffTopicRequest, offTopicReply } from "./scope";
 import { RepositoryToolbox } from "./repository-tools";
+import { deliveryFailureStatus } from "./delivery-status";
 
 const APPROVE_PATTERN = /^\/agent\s+approve\s+([a-f0-9]{8,64})\s*$/i;
 const REJECT_PATTERN = /^\/agent\s+reject\s+([a-f0-9]{8,64})\s*$/i;
@@ -278,7 +279,7 @@ export class RepositoryThreadAgent extends Agent<Env, ThreadState> {
       });
       await store.markDelivery(event.deliveryId, "completed");
     } catch (error) {
-      await store.markDelivery(event.deliveryId, "failed");
+      await store.markDelivery(event.deliveryId, deliveryFailureStatus(error));
       throw error;
     }
   }
