@@ -47,6 +47,20 @@ export const repositoryConfigSchema = z.object({
   autonomy: z.object({
     automatic: automaticActionsSchema,
     minimumConfidence: z.number().min(0).max(1).default(0.9),
+    duplicateMinimumConfidence: z.number().min(0).max(1).default(0.88),
+    assignment: z
+      .object({
+        historyDepth: z.number().int().min(5).max(100).default(30),
+        minimumCommits: z.number().int().min(1).max(20).default(3),
+        minimumShare: z.number().min(0.5).max(1).default(0.6),
+        minimumLead: z.number().int().min(1).max(20).default(2),
+      })
+      .default({
+        historyDepth: 30,
+        minimumCommits: 3,
+        minimumShare: 0.6,
+        minimumLead: 2,
+      }),
     trustedAssociations: z
       .array(z.enum(["OWNER", "MEMBER", "COLLABORATOR"]))
       .default(["OWNER", "MEMBER", "COLLABORATOR"]),

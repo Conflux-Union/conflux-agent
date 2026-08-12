@@ -62,6 +62,35 @@ const decision: AgentDecision = {
 };
 
 describe("planActions", () => {
+  it("replaces an off-topic model reply with a fixed refusal", async () => {
+    const actions = await planActions(
+      { ...event, comment: { id: 1, body: "讲个冷笑话", author: "reporter", updatedAt: event.item.updatedAt } },
+      INITIAL_THREAD_STATE,
+      {
+        ...decision,
+        disposition: "reply",
+        requestScope: "off_topic",
+        reply: "A model-generated joke that must not be posted",
+        actions: [
+          {
+            id: "unsafe",
+            kind: "set_milestone",
+            target: { owner: "Org", repo: "Repo", number: 9 },
+            parameters: { title: "Unrelated" },
+            confidence: 1,
+            evidence: [],
+            rationale: "Unsafe off-topic side effect",
+          },
+        ],
+      },
+      config,
+    );
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.kind).toBe("comment");
+    expect(actions[0]?.parameters.body).toContain("只处理与本仓库代码");
+    expect(actions[0]?.parameters.body).not.toContain("model-generated joke");
+  });
+
   it("links an earlier pull request when the issue is created later", async () => {
     const actions = await planActions(event, INITIAL_THREAD_STATE, decision, config);
     const link = actions.find((action) => action.kind === "link_closing_issue");
@@ -69,7 +98,7 @@ describe("planActions", () => {
     expect(link?.parameters).toMatchObject({ issueNumber: 9, baseBranch: "main" });
   });
 
-  it("assigns the sole configured owner for a classified area", async () => {
+  it("does not infer assignees from static area configuration", async () => {
     const ownershipConfig = repositoryConfigSchema.parse({
       ...config,
       areas: [{ label: "area/client", paths: ["src/**"], assignees: ["Trirrin"] }],
@@ -86,10 +115,7 @@ describe("planActions", () => {
       ownedDecision,
       ownershipConfig,
     );
-    expect(actions.find((action) => action.kind === "set_assignees")?.parameters).toEqual({
-      assignees: ["Trirrin"],
-      areaLabels: ["area/client"],
-    });
+    expect(actions.find((action) => action.kind === "set_assignees")).toBeUndefined();
   });
 
   it("always targets the current pull request when it resolves an issue", async () => {

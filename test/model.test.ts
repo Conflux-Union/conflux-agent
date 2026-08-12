@@ -147,6 +147,27 @@ describe("normalizeModelDecision", () => {
     expect(decision.relationships).toEqual([]);
     expect(decision.actions).toEqual([]);
   });
+
+  it("ignores model-selected assignees", async () => {
+    const decision = await normalizeModelDecision(
+      {
+        ...raw,
+        relationships: [],
+        actions: [
+          {
+            kind: "set_assignees",
+            confidence: 1,
+            rationale: "The author is a maintainer",
+            parameters: { assignees: ["Trirrin"] },
+          },
+        ],
+      },
+      event,
+      config,
+      [],
+    );
+    expect(decision.actions).toEqual([]);
+  });
 });
 
 describe("extractTrustedImageUrls", () => {

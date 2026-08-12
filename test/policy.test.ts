@@ -113,7 +113,53 @@ describe("evaluateActions", () => {
     expect(result.pending[0]?.requiresApproval).toBe(true);
   });
 
-  it("requires a uniquely configured classified area before assignment", () => {
+  it("automatically closes a concrete duplicate at the duplicate threshold", () => {
+    const candidate: RelationshipCandidate = {
+      owner: "Conflux-Union",
+      repo: "repo",
+      number: 9,
+      kind: "issue",
+      relationship: "duplicate",
+      confidence: 0.9,
+      contentHash: "hash",
+      evidence: [
+        {
+          kind: "issue",
+          reference: "Conflux-Union/repo#9",
+          excerpt: "The same failure and version are described.",
+        },
+      ],
+    };
+    const close: ProposedAction = {
+      id: "duplicate",
+      kind: "close_issue",
+      target: { owner: "Conflux-Union", repo: "repo", number: 2 },
+      parameters: { reason: "duplicate", duplicateOf: 9, relationship: candidate },
+      confidence: 0.9,
+      evidence: candidate.evidence,
+      rationale: "Duplicate of #9",
+    };
+    const duplicateConfig = repositoryConfigSchema.parse({
+      ...config,
+      autonomy: {
+        ...config.autonomy,
+        automatic: { ...config.autonomy.automatic, duplicate: true },
+        minimumConfidence: 0.92,
+        duplicateMinimumConfidence: 0.88,
+      },
+    });
+    const issueEvent: RepositoryEvent = {
+      ...event,
+      eventName: "issues",
+      item: { ...event.item, kind: "issue", number: 2 },
+    };
+    expect(evaluateActions([close], issueEvent, duplicateConfig).executable).toHaveLength(1);
+    expect(
+      evaluateActions([{ ...close, confidence: 0.87 }], issueEvent, duplicateConfig).pending,
+    ).toHaveLength(1);
+  });
+
+  it("rejects model-suggested assignment without commit-history evidence", () => {
     const assignment: ProposedAction = {
       id: "assign",
       kind: "set_assignees",
@@ -133,19 +179,27 @@ describe("evaluateActions", () => {
         automatic: { ...config.autonomy.automatic, assignment: true },
       },
     });
-    const pending = evaluateActions([assignment], event, assignmentConfig);
-    expect(pending.pending).toHaveLength(1);
+    const rejected = evaluateActions([assignment], event, assignmentConfig);
+    expect(rejected.rejected[0]?.reason).toContain("commit history");
 
-    const classified = evaluateActions(
+    const verified = evaluateActions(
       [
         {
           ...assignment,
-          parameters: { assignees: ["Trirrin"], areaLabels: ["area/client"] },
+          parameters: {
+            assignees: ["Trirrin"],
+            areaLabels: ["area/client"],
+            source: "commit_history",
+            dominantCommits: 7,
+            totalCommits: 10,
+            runnerUpCommits: 2,
+          },
+          evidence: [{ kind: "commit", reference: "abcdef123456", excerpt: "Fix client" }],
         },
       ],
       event,
       assignmentConfig,
     );
-    expect(classified.executable).toHaveLength(1);
+    expect(verified.executable).toHaveLength(1);
   });
 });

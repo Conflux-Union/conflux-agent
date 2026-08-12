@@ -151,6 +151,22 @@ export class GitHubClient {
     return this.request<Array<Record<string, any>>>(`/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`);
   }
 
+  listCommitsForPath(owner: string, repo: string, path: string, perPage: number) {
+    return this.request<Array<Record<string, any>>>(
+      `/repos/${owner}/${repo}/commits?path=${encodeURIComponent(path)}&per_page=${perPage}`,
+    );
+  }
+
+  async canAssign(owner: string, repo: string, assignee: string): Promise<boolean> {
+    try {
+      await this.request(`/repos/${owner}/${repo}/assignees/${encodeURIComponent(assignee)}`);
+      return true;
+    } catch (error) {
+      if (error instanceof GitHubError && error.status === 404) return false;
+      throw error;
+    }
+  }
+
   listIssueFieldValues(owner: string, repo: string, number: number) {
     return this.request<Array<Record<string, any>>>(
       `/repos/${owner}/${repo}/issues/${number}/issue-field-values`,
@@ -277,9 +293,13 @@ export class GitHubClient {
       }
       case "set_assignees": {
         const requested = (action.parameters.assignees as string[] | undefined) ?? [];
-        const allowed = new Set(config.areas.flatMap((area) => area.assignees));
-        const assignees = requested.filter((login) => allowed.has(login));
-        if (assignees.length !== 1) throw new Error("Assignment requires one configured owner");
+        if (action.parameters.source !== "commit_history" || requested.length !== 1) {
+          throw new Error("Assignment requires one commit-history owner");
+        }
+        const assignees = requested;
+        if (!(await this.canAssign(owner, repo, assignees[0]!))) {
+          throw new Error(`GitHub user is not assignable: ${assignees[0]}`);
+        }
         await this.request(`/repos/${owner}/${repo}/issues/${number}/assignees`, {
           method: "POST",
           body: JSON.stringify({ assignees }),

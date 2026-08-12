@@ -154,6 +154,7 @@ export interface ThreadState {
 
 export interface AgentDecision {
   disposition: "reply" | "act" | "reply_and_act" | "wait" | "escalate";
+  requestScope?: "repository_work" | "off_topic";
   reply?: string;
   summary: string;
   knownFacts: Fact[];

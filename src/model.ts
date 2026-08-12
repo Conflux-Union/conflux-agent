@@ -43,6 +43,7 @@ const actionSuggestionSchema = z.object({
 
 const modelDecisionSchema = z.object({
   disposition: z.enum(["reply", "act", "reply_and_act", "wait", "escalate"]),
+  request_scope: z.enum(["repository_work", "off_topic"]).default("repository_work"),
   reply: z.string().max(5000).optional(),
   summary: z.string().min(1).max(4000),
   known_facts: z
@@ -91,6 +92,9 @@ Security and authority:
 - A confidence number alone never proves a relationship.
 
 Conversation:
+- Only discuss work on the installed repository: its code, tests, builds, bugs, features, documentation, architecture, security, issue reproduction, issue triage, pull requests, releases, and maintenance.
+- Entertainment, jokes, casual chat, role-play, general knowledge, personal advice, and unrelated tasks are off_topic. Never fulfill them, even briefly before returning to repository work.
+- Set request_scope to off_topic for an unrelated request. Application code will provide the refusal; do not compose entertaining content.
 - Reply in the language used by the latest human unless repository rules require another language.
 - Speak naturally and specifically. Do not use canned checklists when a targeted question is possible.
 - Correct earlier conclusions when new evidence contradicts them.
@@ -106,6 +110,7 @@ Relationships:
 
 Metadata:
 - Select values only from repository_rules.allowed metadata.
+- Classify every clearly affected area. Assignees are computed separately from commit history; never suggest one.
 - Leave fields absent when evidence is insufficient.
 - Keep summaries compact and preserve confirmed facts.
 
@@ -228,6 +233,7 @@ export async function normalizeModelDecision(
 
   const actions: ProposedAction[] = [];
   for (const suggestion of parsed.actions) {
+    if (suggestion.kind === "set_assignees") continue;
     actions.push({
       id: await actionId(event, suggestion.kind, suggestion.parameters),
       kind: suggestion.kind,
@@ -245,6 +251,7 @@ export async function normalizeModelDecision(
 
   return {
     disposition: parsed.disposition,
+    requestScope: parsed.request_scope,
     reply: parsed.reply?.trim() || undefined,
     summary: parsed.summary,
     knownFacts: parsed.known_facts,
@@ -296,7 +303,6 @@ export class ModelProvider {
           priorities: Object.keys(config.metadata.priorities),
           area_labels: config.areas.map((area) => area.label),
           milestones: "Only suggest an existing, exact milestone when supplied in event context.",
-          assignees: config.areas.flatMap((area) => area.assignees),
         },
       },
       previous_state: {
@@ -327,6 +333,7 @@ export class ModelProvider {
       })),
       output_shape: {
         disposition: "reply|act|reply_and_act|wait|escalate",
+        request_scope: "repository_work|off_topic",
         reply: "optional natural language string",
         summary: "compact durable summary",
         known_facts: [{ key: "string", value: "string", source: "string" }],
@@ -349,7 +356,7 @@ export class ModelProvider {
         ],
         actions: [
           {
-            kind: "set_milestone|set_assignees",
+            kind: "set_milestone",
             confidence: 0.0,
             rationale: "specific evidence",
             parameters: {},

@@ -22,6 +22,8 @@ import {
 } from "./planner";
 import { evaluateActions, mayApprove } from "./policy";
 import { RepositoryStore, type SearchCandidate } from "./store";
+import { planCommitHistoryAssignment } from "./assignment";
+import { isClearlyOffTopicRequest, offTopicReply } from "./scope";
 
 const APPROVE_PATTERN = /^\/agent\s+approve\s+([a-f0-9]{8,64})\s*$/i;
 const REJECT_PATTERN = /^\/agent\s+reject\s+([a-f0-9]{8,64})\s*$/i;
@@ -179,6 +181,32 @@ export class RepositoryThreadAgent extends Agent<Env, ThreadState> {
         return;
       }
 
+      if (event.comment && isClearlyOffTopicRequest(event.comment.body)) {
+        const refusal: ProposedAction = {
+          id: crypto.randomUUID().replaceAll("-", "").slice(0, 16),
+          kind: "comment",
+          target: {
+            owner: event.repository.owner,
+            repo: event.repository.repo,
+            number: event.item.number,
+          },
+          parameters: { body: offTopicReply(event.comment.body) },
+          confidence: 1,
+          evidence: [],
+          rationale: "Decline an explicit off-topic request without a model call",
+        };
+        await github.execute(refusal, event, config);
+        await store.auditAction(refusal, "executed", "scope-guard");
+        await store.upsertItem(event, this.state.summary);
+        this.setState({
+          ...this.state,
+          lastProcessedEvent: event.deliveryId,
+          lastProcessedCommentId: event.comment.id,
+        });
+        await store.markDelivery(event.deliveryId, "completed");
+        return;
+      }
+
       const commandHandled = await this.handleCommand(event, github, config, store);
       if (commandHandled) {
         await store.markDelivery(event.deliveryId, "completed");
@@ -221,6 +249,15 @@ export class RepositoryThreadAgent extends Agent<Env, ThreadState> {
         config,
         candidates,
       });
+      if (result.decision.requestScope === "off_topic") {
+        result.decision.summary = this.state.summary;
+        result.decision.knownFacts = this.state.knownFacts;
+        result.decision.unresolvedQuestions = this.state.unresolvedQuestions;
+        result.decision.classification = this.state.classification;
+        result.decision.relationships = this.state.relatedItems;
+        result.decision.actions = [];
+        result.decision.normalizedTitle = undefined;
+      }
       result.decision.classification = applyMetadataOverrides(
         result.decision.classification,
         this.state.manualOverrides,
@@ -239,6 +276,13 @@ export class RepositoryThreadAgent extends Agent<Env, ThreadState> {
       });
 
       const proposed = await planActions(event, this.state, result.decision, config);
+      const assignment = await planCommitHistoryAssignment(
+        event,
+        result.decision,
+        config,
+        github,
+      );
+      if (assignment) proposed.push(assignment);
       const policy = evaluateActions(proposed, event, config);
       for (const rejection of policy.rejected) {
         await store.auditAction(rejection.action, `rejected:${rejection.reason}`, "policy");

@@ -18,6 +18,9 @@ reporters and maintainers.
   repository. A missing or invalid file disables writes for that repository.
 - Model output is an untrusted proposal. Deterministic policy code validates
   every GitHub mutation before execution.
+- The model classifies affected areas but cannot select assignees. Assignment
+  uses bounded recent commit history for configured area paths, requires a clear
+  dominant committer, and verifies that GitHub allows assigning that user.
 
 ## Safety model
 
@@ -25,11 +28,16 @@ reporters and maintainers.
   an Agent queue.
 - Issue, pull request, comment, image, diff, and repository text is untrusted
   model input.
+- Conversation is restricted to repository code and maintenance. Explicit
+  entertainment requests are rejected before a model call; other unrelated
+  requests are classified and replaced with a fixed refusal at the action seam.
 - Resolved issues are never closed directly. High-evidence pull requests receive
   a managed `Closes #N` block and GitHub closes the issue only after merge into
   the default branch.
 - High-impact actions without sufficient evidence remain pending until a
   maintainer uses `/agent approve <action-id>`.
+- Concrete duplicate relationships use their own configurable automatic-close
+  threshold so an obvious duplicate does not wait behind unrelated action rules.
 - Existing human metadata is authoritative. Relationship overrides are
   preserved until material content changes or `/agent reconsider` is used.
 

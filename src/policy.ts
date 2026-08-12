@@ -19,8 +19,8 @@ export interface PolicyResult {
   rejected: Array<{ action: ProposedAction; reason: string }>;
 }
 
-function automaticEnabled(kind: ActionKind, config: RepositoryConfig): boolean {
-  switch (kind) {
+function automaticEnabled(action: ProposedAction, config: RepositoryConfig): boolean {
+  switch (action.kind) {
     case "comment":
       return config.autonomy.automatic.conversation;
     case "set_title":
@@ -36,10 +36,68 @@ function automaticEnabled(kind: ActionKind, config: RepositoryConfig): boolean {
     case "set_assignees":
       return config.autonomy.automatic.assignment;
     case "close_issue":
-      return config.autonomy.automatic.duplicate || config.autonomy.automatic.wontfix;
+      if (action.parameters.reason === "duplicate") {
+        return config.autonomy.automatic.duplicate;
+      }
+      return action.parameters.reason === "wontfix" && config.autonomy.automatic.wontfix;
     case "set_milestone":
       return config.autonomy.automatic.metadata;
   }
+}
+
+function isConcreteDuplicate(
+  action: ProposedAction,
+  event: RepositoryEvent,
+): boolean {
+  const relationship = action.parameters.relationship as RelationshipCandidate | undefined;
+  const duplicateOf = action.parameters.duplicateOf;
+  const expectedReference = `${event.repository.owner}/${event.repository.repo}#${duplicateOf}`;
+  return Boolean(
+    event.item.kind === "issue" &&
+      duplicateOf !== event.item.number &&
+      relationship?.relationship === "duplicate" &&
+      relationship.kind === "issue" &&
+      relationship.owner.toLowerCase() === event.repository.owner.toLowerCase() &&
+      relationship.repo.toLowerCase() === event.repository.repo.toLowerCase() &&
+      relationship.number === duplicateOf &&
+      Number.isInteger(duplicateOf) &&
+      relationship.evidence.some(
+        (entry) =>
+          entry.kind === "issue" &&
+          entry.reference.toLowerCase() === expectedReference.toLowerCase() &&
+          Boolean(entry.excerpt?.trim()),
+      ),
+  );
+}
+
+function isCommitHistoryAssignment(
+  action: ProposedAction,
+  config: RepositoryConfig,
+): boolean {
+  const assignees = action.parameters.assignees as string[] | undefined;
+  const areaLabels = action.parameters.areaLabels as string[] | undefined;
+  const dominantCommits = Number(action.parameters.dominantCommits);
+  const totalCommits = Number(action.parameters.totalCommits);
+  const runnerUpCommits = Number(action.parameters.runnerUpCommits);
+  const configuredAreas = new Set(config.areas.map((area) => area.label));
+  return Boolean(
+    action.parameters.source === "commit_history" &&
+      assignees?.length === 1 &&
+      areaLabels?.length &&
+      areaLabels.every((label) => configuredAreas.has(label)) &&
+      Number.isInteger(dominantCommits) &&
+      Number.isInteger(totalCommits) &&
+      Number.isInteger(runnerUpCommits) &&
+      totalCommits >= dominantCommits &&
+      dominantCommits > runnerUpCommits &&
+      runnerUpCommits >= 0 &&
+      dominantCommits >= config.autonomy.assignment.minimumCommits &&
+      dominantCommits / totalCommits >= config.autonomy.assignment.minimumShare &&
+      dominantCommits - runnerUpCommits >= config.autonomy.assignment.minimumLead &&
+      action.evidence.some(
+        (entry) => entry.kind === "commit" && /^[0-9a-f]{7,40}$/i.test(entry.reference),
+      ),
+  );
 }
 
 export function hasDeterministicResolutionEvidence(
@@ -82,33 +140,17 @@ export function evaluateActions(
       continue;
     }
     if (action.kind === "close_issue" && action.parameters.reason === "duplicate") {
-      const relationship = action.parameters.relationship as RelationshipCandidate | undefined;
-      const hasIssueEvidence = relationship?.evidence.some(
-        (entry) => entry.kind === "issue" && entry.excerpt?.trim(),
-      );
-      if (
-        relationship?.relationship !== "duplicate" ||
-        !hasIssueEvidence ||
-        !Number.isInteger(action.parameters.duplicateOf)
-      ) {
+      if (!isConcreteDuplicate(action, event)) {
         result.pending.push({ ...action, requiresApproval: true });
         continue;
       }
     }
     if (action.kind === "set_assignees") {
-      const assignees = action.parameters.assignees as string[] | undefined;
-      const areaLabels = action.parameters.areaLabels as string[] | undefined;
-      const matchingAreas = config.areas.filter(
-        (area) => areaLabels?.includes(area.label),
-      );
-      const uniquelyConfigured =
-        assignees?.length === 1 &&
-        matchingAreas.length > 0 &&
-        matchingAreas.every(
-          (area) => area.assignees.length === 1 && area.assignees[0] === assignees[0],
-        );
-      if (!uniquelyConfigured) {
-        result.pending.push({ ...action, requiresApproval: true });
+      if (!isCommitHistoryAssignment(action, config)) {
+        result.rejected.push({
+          action,
+          reason: "Assignment must come from verified module commit history",
+        });
         continue;
       }
     }
@@ -126,8 +168,12 @@ export function evaluateActions(
     }
 
     const highImpact = HIGH_IMPACT_ACTIONS.has(action.kind);
-    const confident = action.confidence >= config.autonomy.minimumConfidence;
-    if (action.requiresApproval || !automaticEnabled(action.kind, config) || (highImpact && !confident)) {
+    const minimumConfidence =
+      action.kind === "close_issue" && action.parameters.reason === "duplicate"
+        ? config.autonomy.duplicateMinimumConfidence
+        : config.autonomy.minimumConfidence;
+    const confident = action.confidence >= minimumConfidence;
+    if (action.requiresApproval || !automaticEnabled(action, config) || (highImpact && !confident)) {
       result.pending.push({ ...action, requiresApproval: true });
       continue;
     }

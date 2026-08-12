@@ -8,6 +8,7 @@ import type {
   ThreadState,
 } from "./domain";
 import { sha256 } from "./crypto";
+import { offTopicReply } from "./scope";
 
 function nativeFieldLabel(
   currentLabels: string[],
@@ -335,6 +336,20 @@ export async function planActions(
   decision: AgentDecision,
   config: RepositoryConfig,
 ): Promise<ProposedAction[]> {
+  if (decision.requestScope === "off_topic") {
+    const body = offTopicReply(event.comment?.body ?? event.item.body);
+    return [
+      {
+        id: await id(event, "comment", body),
+        kind: "comment",
+        target: target(event),
+        parameters: { body },
+        confidence: 1,
+        evidence: [],
+        rationale: "Decline a request outside repository maintenance scope",
+      },
+    ];
+  }
   const actions = [...decision.actions];
   if (decision.reply && decision.disposition !== "wait") {
     actions.push({
@@ -427,30 +442,6 @@ export async function planActions(
     });
   }
 
-  const ownedAreas = config.areas.filter(
-    (area) =>
-      decision.classification.areaLabels.includes(area.label) && area.assignees.length === 1,
-  );
-  const owners = [...new Set(ownedAreas.flatMap((area) => area.assignees))];
-  if (
-    event.item.kind === "issue" &&
-    owners.length === 1 &&
-    !event.item.assignees.includes(owners[0]!)
-  ) {
-    const areaLabels = ownedAreas
-      .filter((area) => area.assignees[0] === owners[0])
-      .map((area) => area.label);
-    actions.push({
-      id: await id(event, "set_assignees", { assignees: owners, areaLabels }),
-      kind: "set_assignees",
-      target: target(event),
-      parameters: { assignees: owners, areaLabels },
-      confidence: 0.95,
-      evidence: [],
-      rationale: `Assign the sole configured owner for ${areaLabels.join(", ")}`,
-    });
-  }
-
   for (const relationship of decision.relationships) {
     const closing = relationshipForClosing(event, relationship);
     if (!closing) continue;
@@ -477,8 +468,13 @@ export async function planActions(
     });
   }
   if (event.item.kind === "issue") {
-    for (const relationship of decision.relationships) {
-      if (relationship.relationship !== "duplicate" || relationship.kind !== "issue") continue;
+    const relationship = decision.relationships
+      .filter(
+        (candidate) =>
+          candidate.relationship === "duplicate" && candidate.kind === "issue",
+      )
+      .sort((left, right) => right.confidence - left.confidence)[0];
+    if (relationship) {
       actions.push({
         id: await id(event, "close_issue", {
           reason: "duplicate",
