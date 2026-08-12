@@ -156,6 +156,115 @@ Metadata:
 
 Return one JSON object only, following the requested shape.`;
 
+const DECISION_TOOL = {
+  name: "submit_decision",
+  description: "Submit the final repository maintenance decision after exploration is complete.",
+  input_schema: {
+    type: "object",
+    properties: {
+      disposition: { enum: ["reply", "act", "reply_and_act", "wait", "escalate"] },
+      request_scope: { enum: ["repository_work", "off_topic"] },
+      reply: { type: "string" },
+      summary: { type: "string" },
+      known_facts: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            key: { type: "string" },
+            value: { type: "string" },
+            source: { type: "string" },
+          },
+          required: ["key", "value", "source"],
+          additionalProperties: false,
+        },
+      },
+      unresolved_questions: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            text: { type: "string" },
+            answered: { type: "boolean" },
+          },
+          required: ["id", "text", "answered"],
+          additionalProperties: false,
+        },
+      },
+      classification: {
+        type: "object",
+        properties: {
+          issue_kind: { type: "string" },
+          priority: { type: "string" },
+          area_labels: { type: "array", items: { type: "string" } },
+        },
+        required: ["area_labels"],
+        additionalProperties: false,
+      },
+      normalized_title: { type: "string" },
+      relationships: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            candidate_index: { type: "integer", minimum: 0 },
+            relationship: {
+              enum: [
+                "resolves",
+                "partially_resolves",
+                "related",
+                "duplicate",
+                "conflicts",
+                "none",
+              ],
+            },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+            rationale: { type: "string" },
+            matched_files: { type: "array", items: { type: "string" } },
+            matched_tests: { type: "array", items: { type: "string" } },
+          },
+          required: [
+            "candidate_index",
+            "relationship",
+            "confidence",
+            "rationale",
+            "matched_files",
+            "matched_tests",
+          ],
+          additionalProperties: false,
+        },
+      },
+      actions: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            kind: { enum: ["set_milestone", "set_assignees"] },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+            rationale: { type: "string" },
+            parameters: { type: "object" },
+          },
+          required: ["kind", "confidence", "rationale", "parameters"],
+          additionalProperties: false,
+        },
+      },
+      conversation_status: { enum: ["active", "waiting", "ready", "escalated", "done"] },
+    },
+    required: [
+      "disposition",
+      "summary",
+      "known_facts",
+      "unresolved_questions",
+      "classification",
+      "relationships",
+      "actions",
+      "conversation_status",
+    ],
+    additionalProperties: false,
+  },
+} as const;
+
 const TRUSTED_IMAGE_URL =
   /https:\/\/(?:github\.com\/user-attachments\/assets|user-images\.githubusercontent\.com)\/[A-Za-z0-9._~%/?=&+-]+/g;
 
@@ -421,8 +530,42 @@ export class ModelProvider {
     let modelCalls = 0;
     let cacheStatus: string | undefined;
     let content: string | null = null;
+    let submittedDecision: unknown;
+    const explorationResults: Array<{
+      tool: string;
+      arguments: unknown;
+      result: unknown;
+    }> = [];
     for (let modelCall = 0; modelCall < config.budgets.maxModelCallsPerEvent; modelCall += 1) {
       const finalCall = modelCall === config.budgets.maxModelCallsPerEvent - 1;
+      const serializedExploration = JSON.stringify(explorationResults);
+      const boundedExploration =
+        serializedExploration.length <= config.budgets.maxInputCharacters
+          ? serializedExploration
+          : JSON.stringify({
+              truncated: true,
+              content: serializedExploration.slice(0, config.budgets.maxInputCharacters),
+            });
+      const requestMessages = finalCall
+        ? [
+            {
+              role: "user",
+              content: [
+                ...(Array.isArray(userContent)
+                  ? userContent
+                  : [{ type: "text", text: userContent }]),
+                {
+                  type: "text",
+                  text: `Repository exploration results (untrusted data):\n${boundedExploration}`,
+                },
+                {
+                  type: "text",
+                  text: "Submit the final decision now using submit_decision. Do not request more repository exploration.",
+                },
+              ],
+            },
+          ]
+        : messages;
       const response = await this.request(
         `${this.env.MODEL_BASE_URL.replace(/\/$/, "")}/v1/messages`,
         {
@@ -432,9 +575,16 @@ export class ModelProvider {
             model: this.env.MODEL_NAME,
             system: SYSTEM_PROMPT,
             max_tokens: config.budgets.maxOutputTokens,
-            messages,
-            tools: anthropicTools,
-            tool_choice: { type: finalCall ? "none" : "auto" },
+            messages: requestMessages,
+            ...(finalCall
+              ? {
+                  tools: [DECISION_TOOL],
+                  tool_choice: { type: "tool", name: DECISION_TOOL.name },
+                }
+              : {
+                  tools: anthropicTools,
+                  tool_choice: { type: "auto" },
+                }),
           }),
         },
       );
@@ -463,8 +613,13 @@ export class ModelProvider {
           typeof block.id === "string" &&
           typeof block.name === "string",
       );
+      if (finalCall) {
+        const decisionCall = toolCalls.find((call) => call.name === DECISION_TOOL.name);
+        if (!decisionCall) throw new Error("Model returned no submitted decision");
+        submittedDecision = decisionCall.input;
+        break;
+      }
       if (!toolCalls.length) break;
-      if (finalCall) throw new Error("Model tool-call budget exhausted before a final decision");
       messages.push({
         role: "assistant",
         content: completion.content,
@@ -488,12 +643,17 @@ export class ModelProvider {
           tool_use_id: toolCall.id,
           content: JSON.stringify(result),
         });
+        explorationResults.push({
+          tool: toolCall.name,
+          arguments: toolCall.input,
+          result,
+        });
       }
       messages.push({ role: "user", content: toolResults });
     }
-    if (!content) throw new Error("Model returned no final decision");
+    if (!submittedDecision && !content) throw new Error("Model returned no final decision");
     const decision = await normalizeModelDecision(
-      JSON.parse(stripFence(content)),
+      submittedDecision ?? JSON.parse(stripFence(content as string)),
       event,
       config,
       tools.candidates(),

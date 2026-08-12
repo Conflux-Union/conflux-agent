@@ -226,16 +226,38 @@ describe("ModelProvider", () => {
         role: "assistant",
         content: [
           {
-            type: "text",
-            text: JSON.stringify({
+            type: "tool_use",
+            id: "toolu-2",
+            name: "search_code",
+            input: { query: "supported Minecraft versions" },
+          },
+        ],
+        stop_reason: "tool_use",
+        usage: {
+          input_tokens: 80,
+          output_tokens: 10,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 20,
+        },
+      },
+      {
+        id: "msg-3",
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "decision-1",
+            name: "submit_decision",
+            input: {
                 ...raw,
                 disposition: "reply",
                 reply: "The minimap is rendered by src/client/map.ts.",
                 relationships: [],
-            }),
+            },
           },
         ],
-        stop_reason: "end_turn",
+        stop_reason: "tool_use",
         usage: {
           input_tokens: 120,
           output_tokens: 30,
@@ -316,13 +338,16 @@ describe("ModelProvider", () => {
       },
       config: repositoryConfigSchema.parse({
         ...config,
-        budgets: { maxModelCallsPerEvent: 2 },
+        budgets: { maxModelCallsPerEvent: 3 },
       }),
       tools,
     });
 
-    expect(calls).toEqual([{ name: "search_code", arguments: { query: "renderMinimap" } }]);
-    expect(requests).toHaveLength(2);
+    expect(calls).toEqual([
+      { name: "search_code", arguments: { query: "renderMinimap" } },
+      { name: "search_code", arguments: { query: "supported Minecraft versions" } },
+    ]);
+    expect(requests).toHaveLength(3);
     expect(requests[0]?.url).toBe("https://model.example/anthropic/v1/messages");
     expect(requests[0]?.headers).toMatchObject({
       "anthropic-version": "2023-06-01",
@@ -383,13 +408,38 @@ describe("ModelProvider", () => {
         ],
       },
     ]);
-    expect(requests[1]?.body.tool_choice).toEqual({ type: "none" });
+    expect(requests[2]?.body.messages).toHaveLength(1);
+    expect(requests[2]?.body.messages[0]).toMatchObject({ role: "user" });
+    expect(requests[2]?.body.messages[0].content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "text",
+          text: expect.stringContaining(
+            JSON.stringify({ matches: [{ path: "src/client/map.ts" }] }),
+          ),
+        }),
+        expect.objectContaining({
+          type: "text",
+          text: expect.stringContaining("Submit the final decision now"),
+        }),
+      ]),
+    );
+    expect(requests[2]?.body).toMatchObject({
+      tools: [
+        {
+          name: "submit_decision",
+          description: expect.any(String),
+          input_schema: { type: "object" },
+        },
+      ],
+      tool_choice: { type: "tool", name: "submit_decision" },
+    });
     expect(result.decision.reply).toContain("src/client/map.ts");
     expect(result.usage).toMatchObject({
-      modelCalls: 2,
-      inputTokens: 330,
-      outputTokens: 50,
-      cachedInputTokens: 100,
+      modelCalls: 3,
+      inputTokens: 430,
+      outputTokens: 60,
+      cachedInputTokens: 120,
     });
   });
 });
