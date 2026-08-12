@@ -80,8 +80,8 @@ Required Worker secrets:
 - `GITHUB_WEBHOOK_SECRET`
 - `MODEL_API_KEY`
 
-`MODEL_BASE_URL` defaults to the MiMo OpenAI-compatible endpoint. It can point
-to a Cloudflare AI Gateway Custom Provider without changing the core Agent.
+`MODEL_BASE_URL` defaults to MiMo's Anthropic-compatible endpoint. The model
+provider uses the Anthropic Messages protocol for text, images, and tool use.
 
 ## Repository configuration
 

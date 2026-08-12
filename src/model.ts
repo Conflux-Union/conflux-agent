@@ -72,20 +72,27 @@ const modelDecisionSchema = z.object({
   conversation_status: z.enum(["active", "waiting", "ready", "escalated", "done"]),
 });
 
-interface CompletionResponse {
-  choices: Array<{
-    message: {
-      content: string | null;
-      reasoning_content?: string;
-      tool_calls?: ModelToolCall[];
-    };
-  }>;
+interface AnthropicMessageResponse {
+  content: AnthropicContentBlock[];
+  stop_reason?: string | null;
   usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    prompt_tokens_details?: { cached_tokens?: number };
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
   };
 }
+
+type AnthropicContentBlock =
+  | { type: "text"; text: string; [key: string]: unknown }
+  | {
+      type: "tool_use";
+      id: string;
+      name: string;
+      input: unknown;
+      [key: string]: unknown;
+    }
+  | { type: string; [key: string]: unknown };
 
 export interface ModelToolDefinition {
   type: "function";
@@ -94,12 +101,6 @@ export interface ModelToolDefinition {
     description: string;
     parameters: Record<string, unknown>;
   };
-}
-
-interface ModelToolCall {
-  id: string;
-  type: "function";
-  function: { name: string; arguments: string };
 }
 
 export interface ModelToolExecutor {
@@ -395,22 +396,25 @@ export class ModelProvider {
     const imageUrls = extractTrustedImageUrls([event.item.body, event.comment?.body]);
     const userContent = imageUrls.length
       ? [
-          ...imageUrls.map((url) => ({ type: "image_url", image_url: { url } })),
+          ...imageUrls.map((url) => ({ type: "image", source: { type: "url", url } })),
           { type: "text", text },
         ]
       : text;
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "api-key": this.env.MODEL_API_KEY,
+      "x-api-key": this.env.MODEL_API_KEY,
+      "anthropic-version": "2023-06-01",
       "cf-aig-skip-cache": "true",
     };
     if (this.env.AI_GATEWAY_TOKEN) {
       headers["cf-aig-authorization"] = `Bearer ${this.env.AI_GATEWAY_TOKEN}`;
     }
-    const messages: Array<Record<string, unknown>> = [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userContent },
-    ];
+    const messages: Array<Record<string, unknown>> = [{ role: "user", content: userContent }];
+    const anthropicTools = tools.definitions.map((definition) => ({
+      name: definition.function.name,
+      description: definition.function.description,
+      input_schema: definition.function.parameters,
+    }));
     let inputTokens = 0;
     let outputTokens = 0;
     let cachedInputTokens = 0;
@@ -420,18 +424,17 @@ export class ModelProvider {
     for (let modelCall = 0; modelCall < config.budgets.maxModelCallsPerEvent; modelCall += 1) {
       const finalCall = modelCall === config.budgets.maxModelCallsPerEvent - 1;
       const response = await this.request(
-        `${this.env.MODEL_BASE_URL.replace(/\/$/, "")}/chat/completions`,
+        `${this.env.MODEL_BASE_URL.replace(/\/$/, "")}/v1/messages`,
         {
           method: "POST",
           headers,
           body: JSON.stringify({
             model: this.env.MODEL_NAME,
-            thinking: { type: "enabled" },
-            max_completion_tokens: config.budgets.maxOutputTokens,
-            response_format: { type: "json_object" },
+            system: SYSTEM_PROMPT,
+            max_tokens: config.budgets.maxOutputTokens,
             messages,
-            tools: tools.definitions,
-            tool_choice: finalCall ? "none" : "auto",
+            tools: anthropicTools,
+            tool_choice: { type: finalCall ? "none" : "auto" },
           }),
         },
       );
@@ -439,43 +442,54 @@ export class ModelProvider {
         const error = await response.text();
         throw new Error(`Model request failed with ${response.status}: ${error.slice(0, 500)}`);
       }
-      const completion = (await response.json()) as CompletionResponse;
+      const completion = (await response.json()) as AnthropicMessageResponse;
       modelCalls += 1;
-      inputTokens += completion.usage?.prompt_tokens ?? 0;
-      outputTokens += completion.usage?.completion_tokens ?? 0;
-      cachedInputTokens += completion.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+      inputTokens +=
+        (completion.usage?.input_tokens ?? 0) +
+        (completion.usage?.cache_creation_input_tokens ?? 0) +
+        (completion.usage?.cache_read_input_tokens ?? 0);
+      outputTokens += completion.usage?.output_tokens ?? 0;
+      cachedInputTokens += completion.usage?.cache_read_input_tokens ?? 0;
       cacheStatus = response.headers.get("cf-aig-cache-status") ?? cacheStatus;
-      const message = completion.choices[0]?.message;
-      if (!message) throw new Error("Model returned no message");
-      content = message.content;
-      if (!message.tool_calls?.length) break;
+      if (!Array.isArray(completion.content)) throw new Error("Model returned no message");
+      const textBlocks = completion.content.filter(
+        (block): block is Extract<AnthropicContentBlock, { type: "text" }> =>
+          block.type === "text" && typeof block.text === "string",
+      );
+      content = textBlocks.map((block) => block.text).join("").trim() || null;
+      const toolCalls = completion.content.filter(
+        (block): block is Extract<AnthropicContentBlock, { type: "tool_use" }> =>
+          block.type === "tool_use" &&
+          typeof block.id === "string" &&
+          typeof block.name === "string",
+      );
+      if (!toolCalls.length) break;
       if (finalCall) throw new Error("Model tool-call budget exhausted before a final decision");
       messages.push({
         role: "assistant",
-        content: message.content,
-        ...(message.reasoning_content ? { reasoning_content: message.reasoning_content } : {}),
-        tool_calls: message.tool_calls,
+        content: completion.content,
       });
-      for (const toolCall of message.tool_calls) {
+      const toolResults: Array<Record<string, unknown>> = [];
+      for (const toolCall of toolCalls) {
         let result: unknown;
         try {
-          const parsed = JSON.parse(toolCall.function.arguments) as unknown;
-          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          if (!toolCall.input || typeof toolCall.input !== "object" || Array.isArray(toolCall.input)) {
             throw new Error("Tool arguments must be a JSON object");
           }
           result = await tools.execute({
-            name: toolCall.function.name,
-            arguments: parsed as Record<string, unknown>,
+            name: toolCall.name,
+            arguments: toolCall.input as Record<string, unknown>,
           });
         } catch (error) {
           result = { error: error instanceof Error ? error.message : "Tool call failed" };
         }
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: toolCall.id,
           content: JSON.stringify(result),
         });
       }
+      messages.push({ role: "user", content: toolResults });
     }
     if (!content) throw new Error("Model returned no final decision");
     const decision = await normalizeModelDecision(

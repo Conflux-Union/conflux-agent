@@ -189,47 +189,67 @@ describe("extractTrustedImageUrls", () => {
 
 describe("ModelProvider", () => {
   it("lets the model explore with tools before returning its decision", async () => {
-    const requests: Array<Record<string, any>> = [];
+    const requests: Array<{
+      url: string;
+      headers: Record<string, string>;
+      body: Record<string, any>;
+    }> = [];
     const responses = [
       {
-        choices: [
+        id: "msg-1",
+        type: "message",
+        role: "assistant",
+        content: [
           {
-            message: {
-              content: null,
-              reasoning_content: "I need to find the implementation first.",
-              tool_calls: [
-                {
-                  id: "call-1",
-                  type: "function",
-                  function: {
-                    name: "search_code",
-                    arguments: JSON.stringify({ query: "renderMinimap" }),
-                  },
-                },
-              ],
-            },
+            type: "thinking",
+            thinking: "I need to find the implementation first.",
+            signature: "signed-thinking",
+          },
+          {
+            type: "tool_use",
+            id: "toolu-1",
+            name: "search_code",
+            input: { query: "renderMinimap" },
           },
         ],
-        usage: { prompt_tokens: 100, completion_tokens: 20 },
+        stop_reason: "tool_use",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_creation_input_tokens: 10,
+          cache_read_input_tokens: 40,
+        },
       },
       {
-        choices: [
+        id: "msg-2",
+        type: "message",
+        role: "assistant",
+        content: [
           {
-            message: {
-              content: JSON.stringify({
+            type: "text",
+            text: JSON.stringify({
                 ...raw,
                 disposition: "reply",
                 reply: "The minimap is rendered by src/client/map.ts.",
                 relationships: [],
-              }),
-            },
+            }),
           },
         ],
-        usage: { prompt_tokens: 120, completion_tokens: 30 },
+        stop_reason: "end_turn",
+        usage: {
+          input_tokens: 120,
+          output_tokens: 30,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 60,
+        },
       },
     ];
-    const request = async (_input: RequestInfo | URL, init?: RequestInit) => {
-      requests.push(JSON.parse(String(init?.body)));
+    const request = async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        url: String(input),
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
+        body: JSON.parse(String(init?.body)),
+      });
       return new Response(JSON.stringify(responses.shift()), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -261,7 +281,7 @@ describe("ModelProvider", () => {
     };
     const provider = new ModelProvider(
       {
-        MODEL_BASE_URL: "https://model.example/v1",
+        MODEL_BASE_URL: "https://model.example/anthropic",
         MODEL_NAME: "mimo-v2.5",
         MODEL_API_KEY: "secret",
         PROMPT_VERSION: "test",
@@ -270,7 +290,13 @@ describe("ModelProvider", () => {
     );
 
     const result = await provider.decide({
-      event,
+      event: {
+        ...event,
+        item: {
+          ...event.item,
+          body: "![render](https://github.com/user-attachments/assets/render-123)",
+        },
+      },
       state: {
         contentVersion: "",
         summary: "",
@@ -290,27 +316,80 @@ describe("ModelProvider", () => {
       },
       config: repositoryConfigSchema.parse({
         ...config,
-        budgets: { maxModelCallsPerEvent: 3 },
+        budgets: { maxModelCallsPerEvent: 2 },
       }),
       tools,
     });
 
     expect(calls).toEqual([{ name: "search_code", arguments: { query: "renderMinimap" } }]);
     expect(requests).toHaveLength(2);
-    expect(requests[0]?.tools).toEqual(tools.definitions);
-    expect(requests[1]?.messages.slice(-2)).toEqual([
-      expect.objectContaining({
-        role: "assistant",
-        reasoning_content: "I need to find the implementation first.",
-        tool_calls: expect.any(Array),
-      }),
+    expect(requests[0]?.url).toBe("https://model.example/anthropic/v1/messages");
+    expect(requests[0]?.headers).toMatchObject({
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+      "x-api-key": "secret",
+    });
+    expect(requests[0]?.body).toMatchObject({
+      model: "mimo-v2.5",
+      max_tokens: 2500,
+      system: expect.any(String),
+      tool_choice: { type: "auto" },
+      tools: [
+        {
+          name: "search_code",
+          description: "Search repository code",
+          input_schema: tools.definitions[0]?.function.parameters,
+        },
+      ],
+    });
+    expect(requests[0]?.body.messages[0]).toMatchObject({
+      role: "user",
+      content: [
+        {
+          type: "image",
+          source: {
+            type: "url",
+            url: "https://github.com/user-attachments/assets/render-123",
+          },
+        },
+        { type: "text", text: expect.any(String) },
+      ],
+    });
+    expect(requests[1]?.body.messages.slice(-2)).toEqual([
       {
-        role: "tool",
-        tool_call_id: "call-1",
-        content: JSON.stringify({ matches: [{ path: "src/client/map.ts" }] }),
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "I need to find the implementation first.",
+            signature: "signed-thinking",
+          },
+          {
+            type: "tool_use",
+            id: "toolu-1",
+            name: "search_code",
+            input: { query: "renderMinimap" },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu-1",
+            content: JSON.stringify({ matches: [{ path: "src/client/map.ts" }] }),
+          },
+        ],
       },
     ]);
+    expect(requests[1]?.body.tool_choice).toEqual({ type: "none" });
     expect(result.decision.reply).toContain("src/client/map.ts");
-    expect(result.usage).toMatchObject({ modelCalls: 2, inputTokens: 220, outputTokens: 50 });
+    expect(result.usage).toMatchObject({
+      modelCalls: 2,
+      inputTokens: 330,
+      outputTokens: 50,
+      cachedInputTokens: 100,
+    });
   });
 });
