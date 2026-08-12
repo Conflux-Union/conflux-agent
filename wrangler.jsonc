@@ -1,0 +1,43 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "conflux-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REPOSITORY_THREAD",
+        "class_name": "RepositoryThreadAgent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RepositoryThreadAgent"]
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "conflux-agent",
+      "database_id": "d3a30806-ebe6-4e92-9c97-d231d43f7388",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "APP_ENV": "production",
+    "GITHUB_API_VERSION": "2026-03-10",
+    "MODEL_BASE_URL": "https://api.xiaomimimo.com/v1",
+    "MODEL_NAME": "mimo-v2.5",
+    "PROMPT_VERSION": "v1"
+  }
+}

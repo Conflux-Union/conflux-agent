@@ -1,0 +1,289 @@
+import { SignJWT, importPKCS8 } from "jose";
+import { parse as parseYaml } from "yaml";
+import { repositoryConfigSchema, type RepositoryConfig } from "./config";
+import type { ProposedAction, RepositoryEvent } from "./domain";
+import type { Env } from "./env";
+import { readClosingLinks, updateClosingLinks } from "./managed-body";
+
+interface GitHubErrorBody {
+  message?: string;
+  documentation_url?: string;
+}
+
+export class GitHubError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+export class GitHubClient {
+  private constructor(
+    private readonly env: Env,
+    private readonly token: string,
+  ) {}
+
+  static async forInstallation(env: Env, installationId: number): Promise<GitHubClient> {
+    const privateKey = await importPKCS8(env.GITHUB_PRIVATE_KEY.replace(/\\n/g, "\n"), "RS256");
+    const now = Math.floor(Date.now() / 1000);
+    const jwt = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256" })
+      .setIssuedAt(now - 60)
+      .setExpirationTime(now + 9 * 60)
+      .setIssuer(env.GITHUB_APP_ID)
+      .sign(privateKey);
+    const response = await fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
+      method: "POST",
+      headers: GitHubClient.headers(env, jwt),
+    });
+    if (!response.ok) throw await GitHubClient.error(response);
+    const payload = (await response.json()) as { token: string };
+    return new GitHubClient(env, payload.token);
+  }
+
+  private static headers(env: Env, token: string): HeadersInit {
+    return {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "User-Agent": "Conflux-Agent",
+      "X-GitHub-Api-Version": env.GITHUB_API_VERSION,
+    };
+  }
+
+  private static async error(response: Response): Promise<GitHubError> {
+    const body = (await response.json().catch(() => ({}))) as GitHubErrorBody;
+    return new GitHubError(body.message ?? `GitHub API returned ${response.status}`, response.status);
+  }
+
+  async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const headers = new Headers(GitHubClient.headers(this.env, this.token));
+    if (init.body) headers.set("Content-Type", "application/json");
+    const response = await fetch(path.startsWith("https://") ? path : `https://api.github.com${path}`, {
+      ...init,
+      headers,
+    });
+    if (!response.ok) throw await GitHubClient.error(response);
+    if (response.status === 204) return undefined as T;
+    return (await response.json()) as T;
+  }
+
+  async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const response = await this.request<{ data?: T; errors?: Array<{ message: string }> }>("/graphql", {
+      method: "POST",
+      body: JSON.stringify({ query, variables }),
+    });
+    if (response.errors?.length) throw new Error(response.errors.map((error) => error.message).join("; "));
+    if (!response.data) throw new Error("GitHub GraphQL returned no data");
+    return response.data;
+  }
+
+  async loadConfig(owner: string, repo: string): Promise<RepositoryConfig | null> {
+    try {
+      const file = await this.request<{ content: string; encoding: string }>(
+        `/repos/${owner}/${repo}/contents/.github/maintainer-agent.yml`,
+      );
+      const text = file.encoding === "base64" ? atob(file.content.replace(/\n/g, "")) : file.content;
+      return repositoryConfigSchema.parse(parseYaml(text));
+    } catch (error) {
+      if (error instanceof GitHubError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  getIssue(owner: string, repo: string, number: number) {
+    return this.request<Record<string, any>>(`/repos/${owner}/${repo}/issues/${number}`);
+  }
+
+  getPull(owner: string, repo: string, number: number) {
+    return this.request<Record<string, any>>(`/repos/${owner}/${repo}/pulls/${number}`);
+  }
+
+  listComments(owner: string, repo: string, number: number, since?: string) {
+    const query = since ? `?per_page=100&since=${encodeURIComponent(since)}` : "?per_page=100";
+    return this.request<Array<Record<string, any>>>(`/repos/${owner}/${repo}/issues/${number}/comments${query}`);
+  }
+
+  listPullFiles(owner: string, repo: string, number: number) {
+    return this.request<Array<Record<string, any>>>(`/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`);
+  }
+
+  searchIssuesAndPulls(query: string) {
+    return this.request<{
+      items: Array<Record<string, any>>;
+    }>(`/search/issues?q=${encodeURIComponent(query)}&per_page=20`);
+  }
+
+  async listIssueTypes(owner: string, repo: string) {
+    return this.request<Array<{ id: number; node_id: string; name: string }>>(
+      `/repos/${owner}/${repo}/issue-types`,
+    );
+  }
+
+  async execute(action: ProposedAction, event: RepositoryEvent, config: RepositoryConfig): Promise<void> {
+    const { owner, repo, number } = action.target;
+    switch (action.kind) {
+      case "comment": {
+        const body = String(action.parameters.body ?? "").trim();
+        if (!body) return;
+        const marker = `<!-- conflux-agent:${action.id} -->`;
+        const existing = await this.listComments(owner, repo, number);
+        if (existing.some((comment) => String(comment.body ?? "").includes(marker))) return;
+        await this.request(`/repos/${owner}/${repo}/issues/${number}/comments`, {
+          method: "POST",
+          body: JSON.stringify({ body: `${body}\n\n${marker}` }),
+        });
+        return;
+      }
+      case "set_title":
+        await this.patchIssue(owner, repo, number, { title: String(action.parameters.title) });
+        return;
+      case "set_labels": {
+        const allowed = new Set([
+          ...Object.values(config.metadata.issueTypes).map((entry) => entry.label),
+          ...Object.values(config.metadata.priorities).map((entry) => entry.label),
+          ...config.areas.map((entry) => entry.label),
+          "status/needs info",
+          "status/needs triage",
+        ]);
+        const live = await this.getIssue(owner, repo, number);
+        const current = new Set(
+          Array.isArray(live.labels)
+            ? live.labels.map((label: Record<string, unknown>) => String(label.name))
+            : [],
+        );
+        for (const label of (action.parameters.remove as string[] | undefined) ?? []) {
+          if (allowed.has(label)) current.delete(label);
+        }
+        for (const label of (action.parameters.add as string[] | undefined) ?? []) {
+          if (allowed.has(label)) current.add(label);
+        }
+        await this.patchIssue(owner, repo, number, { labels: [...current] });
+        return;
+      }
+      case "set_issue_type": {
+        if (event.item.kind !== "issue" || !event.item.nodeId) return;
+        const value = String(action.parameters.value);
+        const configured = Object.values(config.metadata.issueTypes).find(
+          (mapping) => mapping.fieldValue.toLowerCase() === value.toLowerCase(),
+        );
+        if (!configured) throw new Error(`Issue type is not configured: ${value}`);
+        const types = await this.listIssueTypes(owner, repo);
+        const type = types.find((entry) => entry.name.toLowerCase() === configured.fieldValue.toLowerCase());
+        if (!type) throw new Error(`Issue type does not exist: ${configured.fieldValue}`);
+        await this.graphql(
+          "mutation($id: ID!, $type: ID!) { updateIssue(input: {id: $id, issueTypeId: $type}) { issue { id } } }",
+          { id: event.item.nodeId, type: type.node_id },
+        );
+        return;
+      }
+      case "clear_issue_type": {
+        if (event.item.kind !== "issue" || !event.item.nodeId) return;
+        await this.graphql(
+          "mutation($id: ID!) { updateIssue(input: {id: $id, issueTypeId: null}) { issue { id } } }",
+          { id: event.item.nodeId },
+        );
+        return;
+      }
+      case "set_issue_field": {
+        if (event.item.kind !== "issue") return;
+        const fieldId = Number(action.parameters.fieldId);
+        const value = action.parameters.value as string | number;
+        if (fieldId !== config.metadata.priorityFieldId) throw new Error("Issue field is not configured");
+        const allowed = Object.values(config.metadata.priorities).some(
+          (mapping) => mapping.fieldValue === value,
+        );
+        if (!allowed) throw new Error(`Issue field value is not configured: ${String(value)}`);
+        await this.request(`/repos/${owner}/${repo}/issues/${number}/issue-field-values`, {
+          method: "POST",
+          body: JSON.stringify({ issue_field_values: [{ field_id: fieldId, value }] }),
+        });
+        return;
+      }
+      case "clear_issue_field": {
+        if (event.item.kind !== "issue") return;
+        const fieldId = Number(action.parameters.fieldId);
+        if (fieldId !== config.metadata.priorityFieldId) {
+          throw new Error("Issue field is not configured");
+        }
+        try {
+          await this.request(
+            `/repos/${owner}/${repo}/issues/${number}/issue-field-values/${fieldId}`,
+            { method: "DELETE" },
+          );
+        } catch (error) {
+          if (!(error instanceof GitHubError && error.status === 404)) throw error;
+        }
+        return;
+      }
+      case "set_milestone": {
+        const title = String(action.parameters.title);
+        const milestones = await this.request<Array<{ number: number; title: string }>>(
+          `/repos/${owner}/${repo}/milestones?state=open&per_page=100`,
+        );
+        const milestone = milestones.find((entry) => entry.title === title);
+        if (!milestone) throw new Error(`Milestone does not exist: ${title}`);
+        await this.patchIssue(owner, repo, number, { milestone: milestone.number });
+        return;
+      }
+      case "set_assignees": {
+        const requested = (action.parameters.assignees as string[] | undefined) ?? [];
+        const allowed = new Set(config.areas.flatMap((area) => area.assignees));
+        const assignees = requested.filter((login) => allowed.has(login));
+        if (assignees.length !== 1) throw new Error("Assignment requires one configured owner");
+        await this.request(`/repos/${owner}/${repo}/issues/${number}/assignees`, {
+          method: "POST",
+          body: JSON.stringify({ assignees }),
+        });
+        return;
+      }
+      case "add_to_project": {
+        if (!config.metadata.projectId || !event.item.nodeId) return;
+        await this.graphql(
+          "mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } } }",
+          { project: config.metadata.projectId, content: event.item.nodeId },
+        );
+        return;
+      }
+      case "link_closing_issue": {
+        const pull = await this.getPull(owner, repo, number);
+        const issueNumber = Number(action.parameters.issueNumber);
+        const links = readClosingLinks(String(pull.body ?? ""));
+        const body = updateClosingLinks(String(pull.body ?? ""), [...links, issueNumber]);
+        if (body !== pull.body) {
+          await this.request(`/repos/${owner}/${repo}/pulls/${number}`, {
+            method: "PATCH",
+            body: JSON.stringify({ body }),
+          });
+        }
+        return;
+      }
+      case "close_issue": {
+        if (action.parameters.reason === "duplicate") {
+          const duplicateOf = Number(action.parameters.duplicateOf);
+          const comment: ProposedAction = {
+            id: `${action.id}-duplicate`,
+            kind: "comment",
+            target: action.target,
+            parameters: { body: `Closing as a duplicate of #${duplicateOf}.` },
+            confidence: action.confidence,
+            evidence: action.evidence,
+            rationale: action.rationale,
+          };
+          await this.execute(comment, event, config);
+        }
+        const reason = "not_planned";
+        await this.patchIssue(owner, repo, number, { state: "closed", state_reason: reason });
+        return;
+      }
+    }
+  }
+
+  private patchIssue(owner: string, repo: string, number: number, body: Record<string, unknown>) {
+    return this.request(`/repos/${owner}/${repo}/issues/${number}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  }
+}

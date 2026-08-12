@@ -1,0 +1,9 @@
+node_modules/
+.dev.vars
+.wrangler/
+dist/
+coverage/
+src/env.generated.d.ts
+*.log
+.github-app-credentials.json
+.mimo-key
