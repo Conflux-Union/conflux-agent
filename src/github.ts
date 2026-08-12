@@ -209,19 +209,35 @@ export class GitHubClient {
     });
   }
 
+  async addManagedComment(
+    owner: string,
+    repo: string,
+    number: number,
+    body: string,
+    markerId: string,
+  ): Promise<void> {
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    const marker = `<!-- conflux-agent:${markerId} -->`;
+    const existing = await this.listComments(owner, repo, number);
+    if (existing.some((comment) => String(comment.body ?? "").includes(marker))) return;
+    await this.request(`/repos/${owner}/${repo}/issues/${number}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ body: `${trimmed}\n\n${marker}` }),
+    });
+  }
+
   async execute(action: ProposedAction, event: RepositoryEvent, config: RepositoryConfig): Promise<void> {
     const { owner, repo, number } = action.target;
     switch (action.kind) {
       case "comment": {
-        const body = String(action.parameters.body ?? "").trim();
-        if (!body) return;
-        const marker = `<!-- conflux-agent:${action.id} -->`;
-        const existing = await this.listComments(owner, repo, number);
-        if (existing.some((comment) => String(comment.body ?? "").includes(marker))) return;
-        await this.request(`/repos/${owner}/${repo}/issues/${number}/comments`, {
-          method: "POST",
-          body: JSON.stringify({ body: `${body}\n\n${marker}` }),
-        });
+        await this.addManagedComment(
+          owner,
+          repo,
+          number,
+          String(action.parameters.body ?? ""),
+          action.id,
+        );
         return;
       }
       case "set_title":

@@ -21,7 +21,11 @@ import { RepositoryStore } from "./store";
 import { planCommitHistoryAssignment } from "./assignment";
 import { isClearlyOffTopicRequest, offTopicReply } from "./scope";
 import { RepositoryToolbox } from "./repository-tools";
-import { deliveryFailureStatus } from "./delivery-status";
+import {
+  deliveryFailureAction,
+  deliveryFailureStatus,
+  EVENT_PROCESSING_ATTEMPTS,
+} from "./delivery-status";
 import { acknowledgeAndExplore } from "./exploration";
 
 const APPROVE_PATTERN = /^\/agent\s+approve\s+([a-f0-9]{8,64})\s*$/i;
@@ -71,15 +75,42 @@ export class RepositoryThreadAgent extends Agent<Env, ThreadState> {
   }
 
   async receiveEvent(event: RepositoryEvent): Promise<{ queued: boolean }> {
-    await this.queue("processEvent", event, {
-      retry: { maxAttempts: 3, baseDelayMs: 500, maxDelayMs: 5000 },
-    });
+    await this.queue("processEvent", event);
     return { queued: true };
   }
 
   async processEvent(event: RepositoryEvent): Promise<void> {
-    const store = new RepositoryStore(this.env.DB);
     try {
+      await this.retry(() => this.processEventAttempt(event), {
+        maxAttempts: EVENT_PROCESSING_ATTEMPTS,
+        baseDelayMs: 500,
+        maxDelayMs: 5000,
+      });
+    } catch (error) {
+      const store = new RepositoryStore(this.env.DB);
+      await store.markDelivery(event.deliveryId, deliveryFailureStatus(error));
+      const action = deliveryFailureAction(event, error);
+      try {
+        const github = await GitHubClient.forInstallation(
+          this.env,
+          event.repository.installationId,
+        );
+        await github.addManagedComment(
+          action.target.owner,
+          action.target.repo,
+          action.target.number,
+          String(action.parameters.body),
+          action.id,
+        );
+        await store.auditAction(action, "executed", "failure-reporter");
+      } catch (reportError) {
+        console.error("Failed to report terminal event-processing failure", reportError);
+      }
+    }
+  }
+
+  private async processEventAttempt(event: RepositoryEvent): Promise<void> {
+    const store = new RepositoryStore(this.env.DB);
       const github = await GitHubClient.forInstallation(
         this.env,
         event.repository.installationId,
@@ -288,10 +319,6 @@ export class RepositoryThreadAgent extends Agent<Env, ThreadState> {
         },
       });
       await store.markDelivery(event.deliveryId, "completed");
-    } catch (error) {
-      await store.markDelivery(event.deliveryId, deliveryFailureStatus(error));
-      throw error;
-    }
   }
 
   private async handleCommand(

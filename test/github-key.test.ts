@@ -121,6 +121,32 @@ describe("GitHubClient.addEyesReaction", () => {
   });
 });
 
+describe("GitHubClient.addManagedComment", () => {
+  it("does not publish a second comment with the same marker", async () => {
+    const requests: Array<{ path: string; init: RequestInit }> = [];
+    const client = Object.create(GitHubClient.prototype) as GitHubClient;
+    client.request = async <T>(path: string, init: RequestInit = {}) => {
+      requests.push({ path, init });
+      if (path.endsWith("/comments?per_page=100")) {
+        return [{ body: "Already reported\n\n<!-- conflux-agent:failure-delivery -->" }] as T;
+      }
+      return {} as T;
+    };
+
+    await client.addManagedComment(
+      "Org",
+      "Repo",
+      43,
+      "Processing failed.",
+      "failure-delivery",
+    );
+
+    expect(requests).toEqual([
+      { path: "/repos/Org/Repo/issues/43/comments?per_page=100", init: {} },
+    ]);
+  });
+});
+
 describe("GitHubClient.execute", () => {
   it("uses GitHub's native duplicate reason and canonical issue database ID", async () => {
     const requests: Array<{ path: string; init: RequestInit }> = [];
