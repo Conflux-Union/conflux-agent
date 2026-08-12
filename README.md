@@ -26,6 +26,12 @@ and holds natural multi-turn conversations with reporters and maintainers.
 - The model classifies affected areas but cannot select assignees. Assignment
   uses bounded recent commit history for configured area paths, requires a clear
   dominant committer, and verifies that GitHub allows assigning that user.
+- Bug conversations collect only reporter-observable reproduction facts, while
+  feature conversations clarify user goals and observable requirements. The
+  Agent neither designs implementations nor asks participants how to fix work.
+- For question issues, the Agent answers from repository code and documentation
+  when possible. If that evidence is insufficient, it mentions every login in
+  `repository.maintainers` so a human maintainer can answer.
 
 ## Safety model
 
@@ -88,6 +94,6 @@ provider uses the Anthropic Messages protocol for text, images, and tool use.
 
 The installed repository owns its rules in `.github/maintainer-agent.yml`.
 Configuration names legal Type/Priority mappings, read-allowed repositories,
-area-to-path ownership, automatic action thresholds, disabled labels, and
-per-event model and tool budgets. Fields without an existing legal candidate
-remain empty.
+maintainer logins used for unanswered-question escalation, area-to-path
+ownership, automatic action thresholds, disabled labels, and per-event model
+and tool budgets. Fields without an existing legal candidate remain empty.

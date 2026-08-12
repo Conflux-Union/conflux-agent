@@ -51,6 +51,18 @@ function target(event: RepositoryEvent) {
   };
 }
 
+function unansweredQuestionEscalation(
+  event: RepositoryEvent,
+  config: RepositoryConfig,
+): string {
+  const mentions = config.repository.maintainers.map((login) => `@${login}`).join(" ");
+  const humanText = event.comment?.body ?? event.item.body;
+  const message = /\p{Script=Han}/u.test(humanText)
+    ? "我无法从仓库代码和文档中找到可靠答案，请协助回答这个问题。"
+    : "I couldn't find a reliable answer in the repository evidence. Could you answer this question?";
+  return mentions ? `${mentions} ${message}` : message;
+}
+
 type ManualOverride = ThreadState["manualOverrides"][number];
 
 export function metadataOverrideForEvent(
@@ -351,12 +363,18 @@ export async function planActions(
     ];
   }
   const actions = [...decision.actions];
-  if (decision.reply && decision.disposition !== "wait") {
+  const reply =
+    event.item.kind === "issue" &&
+    decision.classification.issueKind === "question" &&
+    decision.disposition === "escalate"
+      ? unansweredQuestionEscalation(event, config)
+      : decision.reply;
+  if (reply && decision.disposition !== "wait") {
     actions.push({
-      id: await id(event, "comment", decision.reply),
+      id: await id(event, "comment", reply),
       kind: "comment",
       target: target(event),
-      parameters: { body: decision.reply },
+      parameters: { body: reply },
       confidence: 1,
       evidence: [],
       rationale: "Continue the repository conversation",

@@ -23,6 +23,11 @@ export const repositoryConfigSchema = z.object({
   repository: z.object({
     description: z.string().min(1),
     defaultBranch: z.string().min(1),
+    maintainers: z
+      .array(z.string().regex(/^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i))
+      .max(100)
+      .transform((logins) => [...new Set(logins)])
+      .default([]),
   }),
   search: z.object({
     repositories: z.array(z.string()).default([]),

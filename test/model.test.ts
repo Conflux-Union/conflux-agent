@@ -367,14 +367,36 @@ describe("ModelProvider", () => {
       "The reply field is posted verbatim as a public GitHub comment",
     );
     expect(requests[0]?.body.system).toContain(
-      "Never address maintainers or recommend what they should do in reply",
+      "You are a repository maintainer responsible for issue intake and triage",
     );
     expect(requests[0]?.body.system).toContain(
-      "Keep internal analysis and maintenance rationale out of reply",
+      "For bug reports, collect only the reporter-observable facts needed to reproduce",
+    );
+    expect(requests[0]?.body.system).toContain(
+      "For feature requests, clarify the user's goal, use case, scope, and observable acceptance behavior",
+    );
+    expect(requests[0]?.body.system).toContain(
+      "Never ask any participant how to implement or fix the issue",
+    );
+    expect(requests[0]?.body.system).toContain(
+      "dependency versions to choose, mappings or API changes, files or classes to modify",
+    );
+    expect(requests[0]?.body.system).toContain(
+      "Do not investigate solution design with repository tools",
+    );
+    expect(requests[0]?.body.system).toContain(
+      "For question issues, search repository code and documentation for a reliable answer",
+    );
+    expect(requests[0]?.body.system).toContain(
+      "If the repository evidence cannot answer the question, choose escalate",
     );
     expect(requests[0]?.body.system).toContain(
       "When closing a duplicate, use reply_and_act and include one brief reply",
     );
+    expect(
+      requests[0]?.body.tools.find((tool: { name: string }) => tool.name === "submit_decision")
+        ?.input_schema.properties.unresolved_questions.description,
+    ).toContain("bug reproduction facts or feature requirements");
     expect(requests[0]?.body.messages[0]).toMatchObject({
       role: "user",
       content: [

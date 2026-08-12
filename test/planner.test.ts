@@ -62,6 +62,97 @@ const decision: AgentDecision = {
 };
 
 describe("planActions", () => {
+  it("publishes a repository-backed answer to a question without escalating", async () => {
+    const questionConfig = repositoryConfigSchema.parse({
+      ...config,
+      repository: {
+        ...config.repository,
+        maintainers: ["Trirrin", "map-maintainer"],
+      },
+      metadata: {
+        issueTypes: { question: { label: "question", fieldValue: "Task" } },
+      },
+    });
+    const answer =
+      "The setting controls minimap zoom; `src/config/MapConfig.ts` defines its range.";
+    const actions = await planActions(
+      event,
+      INITIAL_THREAD_STATE,
+      {
+        ...decision,
+        disposition: "reply",
+        reply: answer,
+        classification: { issueKind: "question", areaLabels: [] },
+        relationships: [],
+      },
+      questionConfig,
+    );
+
+    const comment = actions.find((action) => action.kind === "comment");
+    expect(comment?.parameters.body).toBe(answer);
+    expect(comment?.parameters.body).not.toContain("@Trirrin");
+  });
+
+  it("mentions every configured maintainer when a repository question cannot be answered", async () => {
+    const questionConfig = repositoryConfigSchema.parse({
+      ...config,
+      repository: {
+        ...config.repository,
+        maintainers: ["Trirrin", "map-maintainer"],
+      },
+      metadata: {
+        issueTypes: { question: { label: "question", fieldValue: "Task" } },
+      },
+    });
+    const actions = await planActions(
+      event,
+      INITIAL_THREAD_STATE,
+      {
+        ...decision,
+        disposition: "escalate",
+        reply: "I could not find the answer. Please investigate it for me.",
+        classification: { issueKind: "question", areaLabels: [] },
+        relationships: [],
+        conversationStatus: "escalated",
+      },
+      questionConfig,
+    );
+
+    const comment = actions.find((action) => action.kind === "comment");
+    expect(comment?.parameters.body).toBe(
+      "@Trirrin @map-maintainer I couldn't find a reliable answer in the repository evidence. Could you answer this question?",
+    );
+  });
+
+  it("escalates an unanswered Chinese question without guessing maintainer logins", async () => {
+    const questionConfig = repositoryConfigSchema.parse({
+      ...config,
+      metadata: {
+        issueTypes: { question: { label: "question", fieldValue: "Task" } },
+      },
+    });
+    const actions = await planActions(
+      { ...event, item: { ...event.item, body: "这个配置有什么作用？" } },
+      INITIAL_THREAD_STATE,
+      {
+        ...decision,
+        disposition: "escalate",
+        reply: "请告诉我应该如何实现。",
+        classification: { issueKind: "question", areaLabels: [] },
+        relationships: [],
+        conversationStatus: "escalated",
+      },
+      questionConfig,
+    );
+
+    const comment = actions.find((action) => action.kind === "comment");
+    expect(comment?.parameters.body).toBe(
+      "我无法从仓库代码和文档中找到可靠答案，请协助回答这个问题。",
+    );
+    expect(comment?.parameters.body).not.toContain("@");
+    expect(comment?.parameters.body).not.toContain("实现");
+  });
+
   it("replaces an off-topic model reply with a fixed refusal", async () => {
     const actions = await planActions(
       { ...event, comment: { id: 1, body: "讲个冷笑话", author: "reporter", updatedAt: event.item.updatedAt } },

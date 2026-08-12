@@ -16,6 +16,32 @@ const baseConfig = {
 };
 
 describe("repositoryConfigSchema", () => {
+  it("accepts the repository maintainers to mention for unanswered questions", () => {
+    const config = repositoryConfigSchema.parse({
+      ...baseConfig,
+      repository: {
+        ...baseConfig.repository,
+        maintainers: ["Trirrin", "map-maintainer"],
+      },
+      budgets: {},
+    });
+
+    expect(config.repository.maintainers).toEqual(["Trirrin", "map-maintainer"]);
+  });
+
+  it("rejects values that are not GitHub login names", () => {
+    expect(() =>
+      repositoryConfigSchema.parse({
+        ...baseConfig,
+        repository: {
+          ...baseConfig.repository,
+          maintainers: ["@all maintainers"],
+        },
+        budgets: {},
+      }),
+    ).toThrow();
+  });
+
   it("allows up to 30 model calls per event", () => {
     const config = repositoryConfigSchema.parse({
       ...baseConfig,
