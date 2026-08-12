@@ -434,10 +434,14 @@ export async function normalizeModelDecision(
 }
 
 export class ModelProvider {
+  private readonly request: typeof fetch;
+
   constructor(
     private readonly env: Env,
-    private readonly request: typeof fetch = fetch,
-  ) {}
+    request: typeof fetch = fetch,
+  ) {
+    this.request = (...args) => request(...args);
+  }
 
   async decide(input: {
     event: RepositoryEvent;

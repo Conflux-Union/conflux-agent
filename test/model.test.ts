@@ -194,6 +194,7 @@ describe("ModelProvider", () => {
       headers: Record<string, string>;
       body: Record<string, any>;
     }> = [];
+    const requestContexts: unknown[] = [];
     const responses = [
       {
         id: "msg-1",
@@ -266,7 +267,8 @@ describe("ModelProvider", () => {
         },
       },
     ];
-    const request = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = async function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+      requestContexts.push(this);
       requests.push({
         url: String(input),
         headers: Object.fromEntries(new Headers(init?.headers).entries()),
@@ -347,6 +349,7 @@ describe("ModelProvider", () => {
       { name: "search_code", arguments: { query: "renderMinimap" } },
       { name: "search_code", arguments: { query: "supported Minecraft versions" } },
     ]);
+    expect(requestContexts).toEqual([undefined, undefined, undefined]);
     expect(requests).toHaveLength(3);
     expect(requests[0]?.url).toBe("https://model.example/anthropic/v1/messages");
     expect(requests[0]?.headers).toMatchObject({
