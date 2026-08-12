@@ -124,6 +124,29 @@ describe("normalizeModelDecision", () => {
     );
     expect(decision.classification).toMatchObject({ issueKind: "bug", priority: "P1" });
   });
+
+  it("accepts omitted optional lists and ignores an unusably short title", async () => {
+    const decision = await normalizeModelDecision(
+      {
+        ...raw,
+        classification: { issue_kind: "bug" },
+        normalized_title: "支持 26.3",
+        relationships: undefined,
+        actions: undefined,
+      },
+      event,
+      config,
+      [],
+    );
+    expect(decision.classification).toEqual({
+      issueKind: "bug",
+      priority: undefined,
+      areaLabels: [],
+    });
+    expect(decision.normalizedTitle).toBeUndefined();
+    expect(decision.relationships).toEqual([]);
+    expect(decision.actions).toEqual([]);
+  });
 });
 
 describe("extractTrustedImageUrls", () => {

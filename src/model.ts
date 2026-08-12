@@ -54,11 +54,11 @@ const modelDecisionSchema = z.object({
   classification: z.object({
     issue_kind: z.string().optional(),
     priority: z.string().optional(),
-    area_labels: z.array(z.string()),
+    area_labels: z.array(z.string()).default([]),
   }),
-  normalized_title: z.string().min(10).max(100).optional(),
-  relationships: z.array(relationshipAssessmentSchema).max(5),
-  actions: z.array(actionSuggestionSchema).max(5),
+  normalized_title: z.string().max(100).optional(),
+  relationships: z.array(relationshipAssessmentSchema).max(5).default([]),
+  actions: z.array(actionSuggestionSchema).max(5).default([]),
   conversation_status: z.enum(["active", "waiting", "ready", "escalated", "done"]),
 });
 
@@ -267,7 +267,10 @@ export async function normalizeModelDecision(
         ]),
       ],
     },
-    normalizedTitle: parsed.normalized_title,
+    normalizedTitle:
+      parsed.normalized_title?.trim().length && parsed.normalized_title.trim().length >= 10
+        ? parsed.normalized_title.trim()
+        : undefined,
     relationships,
     actions,
     conversationStatus: parsed.conversation_status,
