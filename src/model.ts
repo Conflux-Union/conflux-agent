@@ -154,7 +154,8 @@ Metadata:
 - Leave fields absent when evidence is insufficient.
 - Keep summaries compact and preserve confirmed facts.
 
-Return one JSON object only, following the requested shape.`;
+When you have enough evidence, call submit_decision with the final decision. Do not return the
+decision as plain text. Do not call submit_decision in the same response as an exploration tool.`;
 
 const DECISION_TOOL = {
   name: "submit_decision",
@@ -286,10 +287,6 @@ export function relationshipComparisonHash(
       candidate.contentHash,
     ]),
   );
-}
-
-function stripFence(value: string): string {
-  return value.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
 }
 
 function actionId(event: RepositoryEvent, kind: string, parameters: unknown): Promise<string> {
@@ -523,53 +520,21 @@ export class ModelProvider {
       headers["cf-aig-authorization"] = `Bearer ${this.env.AI_GATEWAY_TOKEN}`;
     }
     const messages: Array<Record<string, unknown>> = [{ role: "user", content: userContent }];
-    const anthropicTools = tools.definitions.map((definition) => ({
-      name: definition.function.name,
-      description: definition.function.description,
-      input_schema: definition.function.parameters,
-    }));
+    const anthropicTools = [
+      ...tools.definitions.map((definition) => ({
+        name: definition.function.name,
+        description: definition.function.description,
+        input_schema: definition.function.parameters,
+      })),
+      DECISION_TOOL,
+    ];
     let inputTokens = 0;
     let outputTokens = 0;
     let cachedInputTokens = 0;
     let modelCalls = 0;
     let cacheStatus: string | undefined;
-    let content: string | null = null;
     let submittedDecision: unknown;
-    const explorationResults: Array<{
-      tool: string;
-      arguments: unknown;
-      result: unknown;
-    }> = [];
     for (let modelCall = 0; modelCall < config.budgets.maxModelCallsPerEvent; modelCall += 1) {
-      const finalCall = modelCall === config.budgets.maxModelCallsPerEvent - 1;
-      const serializedExploration = JSON.stringify(explorationResults);
-      const boundedExploration =
-        serializedExploration.length <= config.budgets.maxInputCharacters
-          ? serializedExploration
-          : JSON.stringify({
-              truncated: true,
-              content: serializedExploration.slice(0, config.budgets.maxInputCharacters),
-            });
-      const requestMessages = finalCall
-        ? [
-            {
-              role: "user",
-              content: [
-                ...(Array.isArray(userContent)
-                  ? userContent
-                  : [{ type: "text", text: userContent }]),
-                {
-                  type: "text",
-                  text: `Repository exploration results (untrusted data):\n${boundedExploration}`,
-                },
-                {
-                  type: "text",
-                  text: "Submit the final decision now using submit_decision. Do not request more repository exploration.",
-                },
-              ],
-            },
-          ]
-        : messages;
       const response = await this.request(
         `${this.env.MODEL_BASE_URL.replace(/\/$/, "")}/v1/messages`,
         {
@@ -579,16 +544,9 @@ export class ModelProvider {
             model: this.env.MODEL_NAME,
             system: SYSTEM_PROMPT,
             max_tokens: config.budgets.maxOutputTokens,
-            messages: requestMessages,
-            ...(finalCall
-              ? {
-                  tools: [DECISION_TOOL],
-                  tool_choice: { type: "tool", name: DECISION_TOOL.name },
-                }
-              : {
-                  tools: anthropicTools,
-                  tool_choice: { type: "auto" },
-                }),
+            messages,
+            tools: anthropicTools,
+            tool_choice: { type: "auto" },
           }),
         },
       );
@@ -606,30 +564,35 @@ export class ModelProvider {
       cachedInputTokens += completion.usage?.cache_read_input_tokens ?? 0;
       cacheStatus = response.headers.get("cf-aig-cache-status") ?? cacheStatus;
       if (!Array.isArray(completion.content)) throw new Error("Model returned no message");
-      const textBlocks = completion.content.filter(
-        (block): block is Extract<AnthropicContentBlock, { type: "text" }> =>
-          block.type === "text" && typeof block.text === "string",
-      );
-      content = textBlocks.map((block) => block.text).join("").trim() || null;
       const toolCalls = completion.content.filter(
         (block): block is Extract<AnthropicContentBlock, { type: "tool_use" }> =>
           block.type === "tool_use" &&
           typeof block.id === "string" &&
           typeof block.name === "string",
       );
-      if (finalCall) {
-        const decisionCall = toolCalls.find((call) => call.name === DECISION_TOOL.name);
-        if (!decisionCall) throw new Error("Model returned no submitted decision");
+      const decisionCall = toolCalls.find((call) => call.name === DECISION_TOOL.name);
+      const explorationCalls = toolCalls.filter((call) => call.name !== DECISION_TOOL.name);
+      if (decisionCall && explorationCalls.length === 0) {
         submittedDecision = decisionCall.input;
         break;
       }
-      if (!toolCalls.length) break;
+      if (!toolCalls.length) throw new Error("Model returned no tool call");
       messages.push({
         role: "assistant",
         content: completion.content,
       });
       const toolResults: Array<Record<string, unknown>> = [];
       for (const toolCall of toolCalls) {
+        if (toolCall.name === DECISION_TOOL.name) {
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolCall.id,
+            is_error: true,
+            content:
+              "submit_decision cannot be combined with exploration tool calls. Review the exploration results, then submit the decision in a separate response.",
+          });
+          continue;
+        }
         let result: unknown;
         try {
           if (!toolCall.input || typeof toolCall.input !== "object" || Array.isArray(toolCall.input)) {
@@ -647,17 +610,14 @@ export class ModelProvider {
           tool_use_id: toolCall.id,
           content: JSON.stringify(result),
         });
-        explorationResults.push({
-          tool: toolCall.name,
-          arguments: toolCall.input,
-          result,
-        });
       }
       messages.push({ role: "user", content: toolResults });
     }
-    if (!submittedDecision && !content) throw new Error("Model returned no final decision");
+    if (!submittedDecision) {
+      throw new Error("Model call budget exhausted before submit_decision");
+    }
     const decision = await normalizeModelDecision(
-      submittedDecision ?? JSON.parse(stripFence(content as string)),
+      submittedDecision,
       event,
       config,
       tools.candidates(),

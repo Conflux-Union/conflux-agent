@@ -16,9 +16,10 @@ and holds natural multi-turn conversations with reporters and maintainers.
   deduplication, action audit, and model usage.
 - Repository rules live in `.github/maintainer-agent.yml` in each installed
   repository. A missing or invalid file disables writes for that repository.
-- The model controls a bounded read-only exploration loop. It can search code,
-  read files, list directories, inspect issues and pull requests, and inspect
-  path history before returning a decision.
+- Before model exploration starts, the Agent adds an eyes reaction to the
+  target issue or pull request. The model then controls a bounded read-only
+  exploration loop and calls `submit_decision` itself when it has enough
+  evidence.
 - Model output and tool calls are untrusted proposals. Read tools enforce
   repository and size limits, while deterministic policy validates every
   GitHub mutation before execution.

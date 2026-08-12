@@ -202,6 +202,13 @@ export class GitHubClient {
     );
   }
 
+  async addEyesReaction(owner: string, repo: string, number: number): Promise<void> {
+    await this.request(`/repos/${owner}/${repo}/issues/${number}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ content: "eyes" }),
+    });
+  }
+
   async execute(action: ProposedAction, event: RepositoryEvent, config: RepositoryConfig): Promise<void> {
     const { owner, repo, number } = action.target;
     switch (action.kind) {

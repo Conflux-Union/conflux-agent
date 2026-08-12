@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { importGitHubPrivateKey } from "../src/github";
+import { GitHubClient, importGitHubPrivateKey } from "../src/github";
 
 async function exportPrivateKey(type: "pkcs1" | "pkcs8"): Promise<string> {
   const generated = (await crypto.subtle.generateKey(
@@ -57,5 +57,25 @@ describe("importGitHubPrivateKey", () => {
     const pem = (await exportPrivateKey("pkcs8")).replaceAll("\n", "\\n");
 
     await expect(importGitHubPrivateKey(pem)).resolves.toBeDefined();
+  });
+});
+
+describe("GitHubClient.addEyesReaction", () => {
+  it("adds an idempotent eyes reaction to an issue or pull request", async () => {
+    const requests: Array<{ path: string; init: RequestInit }> = [];
+    const client = Object.create(GitHubClient.prototype) as GitHubClient;
+    client.request = async <T>(path: string, init: RequestInit = {}) => {
+      requests.push({ path, init });
+      return {} as T;
+    };
+
+    await client.addEyesReaction("Org", "Repo", 39);
+
+    expect(requests).toEqual([
+      {
+        path: "/repos/Org/Repo/issues/39/reactions",
+        init: { method: "POST", body: JSON.stringify({ content: "eyes" }) },
+      },
+    ]);
   });
 });

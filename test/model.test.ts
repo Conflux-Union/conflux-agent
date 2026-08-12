@@ -212,6 +212,17 @@ describe("ModelProvider", () => {
             name: "search_code",
             input: { query: "renderMinimap" },
           },
+          {
+            type: "tool_use",
+            id: "decision-too-early",
+            name: "submit_decision",
+            input: {
+              ...raw,
+              disposition: "reply",
+              reply: "I have not seen the search result yet.",
+              relationships: [],
+            },
+          },
         ],
         stop_reason: "tool_use",
         usage: {
@@ -223,26 +234,6 @@ describe("ModelProvider", () => {
       },
       {
         id: "msg-2",
-        type: "message",
-        role: "assistant",
-        content: [
-          {
-            type: "tool_use",
-            id: "toolu-2",
-            name: "search_code",
-            input: { query: "supported Minecraft versions" },
-          },
-        ],
-        stop_reason: "tool_use",
-        usage: {
-          input_tokens: 80,
-          output_tokens: 10,
-          cache_creation_input_tokens: 0,
-          cache_read_input_tokens: 20,
-        },
-      },
-      {
-        id: "msg-3",
         type: "message",
         role: "assistant",
         content: [
@@ -345,12 +336,9 @@ describe("ModelProvider", () => {
       tools,
     });
 
-    expect(calls).toEqual([
-      { name: "search_code", arguments: { query: "renderMinimap" } },
-      { name: "search_code", arguments: { query: "supported Minecraft versions" } },
-    ]);
-    expect(requestContexts).toEqual([undefined, undefined, undefined]);
-    expect(requests).toHaveLength(3);
+    expect(calls).toEqual([{ name: "search_code", arguments: { query: "renderMinimap" } }]);
+    expect(requestContexts).toEqual([undefined, undefined]);
+    expect(requests).toHaveLength(2);
     expect(requests[0]?.url).toBe("https://model.example/anthropic/v1/messages");
     expect(requests[0]?.headers).toMatchObject({
       "anthropic-version": "2023-06-01",
@@ -367,6 +355,11 @@ describe("ModelProvider", () => {
           name: "search_code",
           description: "Search repository code",
           input_schema: tools.definitions[0]?.function.parameters,
+        },
+        {
+          name: "submit_decision",
+          description: expect.any(String),
+          input_schema: { type: "object" },
         },
       ],
     });
@@ -398,6 +391,12 @@ describe("ModelProvider", () => {
             name: "search_code",
             input: { query: "renderMinimap" },
           },
+          {
+            type: "tool_use",
+            id: "decision-too-early",
+            name: "submit_decision",
+            input: expect.any(Object),
+          },
         ],
       },
       {
@@ -408,41 +407,23 @@ describe("ModelProvider", () => {
             tool_use_id: "toolu-1",
             content: JSON.stringify({ matches: [{ path: "src/client/map.ts" }] }),
           },
+          {
+            type: "tool_result",
+            tool_use_id: "decision-too-early",
+            is_error: true,
+            content: expect.stringContaining("exploration tool calls"),
+          },
         ],
       },
     ]);
-    expect(requests[2]?.body.messages).toHaveLength(1);
-    expect(requests[2]?.body.messages[0]).toMatchObject({ role: "user" });
-    expect(requests[2]?.body.messages[0].content).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "text",
-          text: expect.stringContaining(
-            JSON.stringify({ matches: [{ path: "src/client/map.ts" }] }),
-          ),
-        }),
-        expect.objectContaining({
-          type: "text",
-          text: expect.stringContaining("Submit the final decision now"),
-        }),
-      ]),
-    );
-    expect(requests[2]?.body).toMatchObject({
-      tools: [
-        {
-          name: "submit_decision",
-          description: expect.any(String),
-          input_schema: { type: "object" },
-        },
-      ],
-      tool_choice: { type: "tool", name: "submit_decision" },
-    });
+    expect(requests[1]?.body.tool_choice).toEqual({ type: "auto" });
+    expect(requests[1]?.body.tools).toEqual(requests[0]?.body.tools);
     expect(result.decision.reply).toContain("src/client/map.ts");
     expect(result.usage).toMatchObject({
-      modelCalls: 3,
-      inputTokens: 430,
-      outputTokens: 60,
-      cachedInputTokens: 120,
+      modelCalls: 2,
+      inputTokens: 330,
+      outputTokens: 50,
+      cachedInputTokens: 100,
     });
   });
 });

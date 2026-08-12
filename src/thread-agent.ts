@@ -22,6 +22,7 @@ import { planCommitHistoryAssignment } from "./assignment";
 import { isClearlyOffTopicRequest, offTopicReply } from "./scope";
 import { RepositoryToolbox } from "./repository-tools";
 import { deliveryFailureStatus } from "./delivery-status";
+import { acknowledgeAndExplore } from "./exploration";
 
 const APPROVE_PATTERN = /^\/agent\s+approve\s+([a-f0-9]{8,64})\s*$/i;
 const REJECT_PATTERN = /^\/agent\s+reject\s+([a-f0-9]{8,64})\s*$/i;
@@ -192,12 +193,21 @@ export class RepositoryThreadAgent extends Agent<Env, ThreadState> {
 
       const tools = new RepositoryToolbox(event, config, github, store);
       const model = new ModelProvider(this.env);
-      const result = await model.decide({
-        event,
-        state: this.state,
-        config,
-        tools,
-      });
+      const result = await acknowledgeAndExplore(
+        github,
+        {
+          owner: event.repository.owner,
+          repo: event.repository.repo,
+          number: event.item.number,
+        },
+        () =>
+          model.decide({
+            event,
+            state: this.state,
+            config,
+            tools,
+          }),
+      );
       if (result.decision.requestScope === "off_topic") {
         result.decision.summary = this.state.summary;
         result.decision.knownFacts = this.state.knownFacts;
