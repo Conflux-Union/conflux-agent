@@ -1,5 +1,46 @@
 import { describe, expect, it } from "vitest";
+import { repositoryConfigSchema } from "../src/config";
+import type { ProposedAction, RepositoryEvent } from "../src/domain";
 import { GitHubClient, importGitHubPrivateKey } from "../src/github";
+
+const config = repositoryConfigSchema.parse({
+  version: 1,
+  repository: { description: "test", defaultBranch: "main" },
+  search: {},
+  metadata: { issueTypes: {}, priorities: {} },
+  areas: [],
+  autonomy: { automatic: {} },
+  budgets: {},
+});
+
+const issueEvent: RepositoryEvent = {
+  deliveryId: "delivery",
+  eventName: "issues",
+  action: "opened",
+  repository: { installationId: 1, owner: "Org", repo: "Repo", defaultBranch: "main" },
+  item: {
+    kind: "issue",
+    number: 40,
+    title: "Duplicate",
+    body: "",
+    state: "open",
+    author: "reporter",
+    assignees: [],
+    labels: [],
+    updatedAt: "2026-08-12T00:00:00Z",
+  },
+  sender: { login: "reporter", type: "User" },
+};
+
+const duplicateAction: ProposedAction = {
+  id: "close-40",
+  kind: "close_issue",
+  target: { owner: "Org", repo: "Repo", number: 40 },
+  parameters: { reason: "duplicate", duplicateOf: 39 },
+  confidence: 1,
+  evidence: [],
+  rationale: "The issues describe the same request",
+};
 
 async function exportPrivateKey(type: "pkcs1" | "pkcs8"): Promise<string> {
   const generated = (await crypto.subtle.generateKey(
@@ -77,5 +118,48 @@ describe("GitHubClient.addEyesReaction", () => {
         init: { method: "POST", body: JSON.stringify({ content: "eyes" }) },
       },
     ]);
+  });
+});
+
+describe("GitHubClient.execute", () => {
+  it("uses GitHub's native duplicate reason and canonical issue database ID", async () => {
+    const requests: Array<{ path: string; init: RequestInit }> = [];
+    const client = Object.create(GitHubClient.prototype) as GitHubClient;
+    client.request = async <T>(path: string, init: RequestInit = {}) => {
+      requests.push({ path, init });
+      if (path === "/repos/Org/Repo/issues/39") return { id: 3900 } as T;
+      return {} as T;
+    };
+
+    await client.execute(duplicateAction, issueEvent, config);
+
+    expect(requests).toEqual([
+      { path: "/repos/Org/Repo/issues/39", init: {} },
+      {
+        path: "/repos/Org/Repo/issues/40",
+        init: {
+          method: "PATCH",
+          body: JSON.stringify({
+            state: "closed",
+            state_reason: "duplicate",
+            duplicate_issue_id: 3900,
+          }),
+        },
+      },
+    ]);
+  });
+
+  it("does not close the issue when the canonical issue has no valid database ID", async () => {
+    const requests: Array<{ path: string; init: RequestInit }> = [];
+    const client = Object.create(GitHubClient.prototype) as GitHubClient;
+    client.request = async <T>(path: string, init: RequestInit = {}) => {
+      requests.push({ path, init });
+      return {} as T;
+    };
+
+    await expect(client.execute(duplicateAction, issueEvent, config)).rejects.toThrow(
+      "canonical issue has no valid database ID",
+    );
+    expect(requests).toEqual([{ path: "/repos/Org/Repo/issues/39", init: {} }]);
   });
 });

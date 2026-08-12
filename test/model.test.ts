@@ -363,6 +363,18 @@ describe("ModelProvider", () => {
         },
       ],
     });
+    expect(requests[0]?.body.system).toContain(
+      "The reply field is posted verbatim as a public GitHub comment",
+    );
+    expect(requests[0]?.body.system).toContain(
+      "Never address maintainers or recommend what they should do in reply",
+    );
+    expect(requests[0]?.body.system).toContain(
+      "Keep internal analysis and maintenance rationale out of reply",
+    );
+    expect(requests[0]?.body.system).toContain(
+      "When closing a duplicate, use reply_and_act and include one brief reply",
+    );
     expect(requests[0]?.body.messages[0]).toMatchObject({
       role: "user",
       content: [

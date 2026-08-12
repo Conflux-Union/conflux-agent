@@ -354,16 +354,17 @@ export class GitHubClient {
       case "close_issue": {
         if (action.parameters.reason === "duplicate") {
           const duplicateOf = Number(action.parameters.duplicateOf);
-          const comment: ProposedAction = {
-            id: `${action.id}-duplicate`,
-            kind: "comment",
-            target: action.target,
-            parameters: { body: `Closing as a duplicate of #${duplicateOf}.` },
-            confidence: action.confidence,
-            evidence: action.evidence,
-            rationale: action.rationale,
-          };
-          await this.execute(comment, event, config);
+          const canonicalIssue = await this.getIssue(owner, repo, duplicateOf);
+          const duplicateIssueId = Number(canonicalIssue.id);
+          if (!Number.isSafeInteger(duplicateIssueId) || duplicateIssueId <= 0) {
+            throw new Error("The canonical issue has no valid database ID");
+          }
+          await this.patchIssue(owner, repo, number, {
+            state: "closed",
+            state_reason: "duplicate",
+            duplicate_issue_id: duplicateIssueId,
+          });
+          return;
         }
         const reason = "not_planned";
         await this.patchIssue(owner, repo, number, { state: "closed", state_reason: reason });
