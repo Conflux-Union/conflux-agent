@@ -19,6 +19,48 @@ export class GitHubError extends Error {
   }
 }
 
+function encodeLength(length: number): number[] {
+  if (length < 0x80) return [length];
+  const bytes: number[] = [];
+  for (let value = length; value > 0; value >>>= 8) bytes.unshift(value & 0xff);
+  return [0x80 | bytes.length, ...bytes];
+}
+
+function pemToDer(pem: string): Uint8Array {
+  const base64 = pem.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+  const binary = atob(base64);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function derToPem(label: string, der: Uint8Array): string {
+  let binary = "";
+  for (const byte of der) binary += String.fromCharCode(byte);
+  const base64 = btoa(binary).match(/.{1,64}/g)?.join("\n") ?? "";
+  return `-----BEGIN ${label}-----\n${base64}\n-----END ${label}-----`;
+}
+
+export function normalizeGitHubPrivateKey(value: string): string {
+  const pem = value.trim().replaceAll("\\n", "\n");
+  if (pem.includes("-----BEGIN PRIVATE KEY-----")) return pem;
+  if (!pem.includes("-----BEGIN RSA PRIVATE KEY-----")) {
+    throw new Error("GitHub private key must be PKCS#1 or PKCS#8 PEM");
+  }
+  const rsaKey = pemToDer(pem);
+  const version = [0x02, 0x01, 0x00];
+  const rsaEncryption = [
+    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+    0x05, 0x00,
+  ];
+  const privateKey = [0x04, ...encodeLength(rsaKey.length), ...rsaKey];
+  const body = Uint8Array.from([...version, ...rsaEncryption, ...privateKey]);
+  const pkcs8 = Uint8Array.from([0x30, ...encodeLength(body.length), ...body]);
+  return derToPem("PRIVATE KEY", pkcs8);
+}
+
+export function importGitHubPrivateKey(value: string) {
+  return importPKCS8(normalizeGitHubPrivateKey(value), "RS256");
+}
+
 export class GitHubClient {
   private constructor(
     private readonly env: Env,
@@ -26,7 +68,7 @@ export class GitHubClient {
   ) {}
 
   static async forInstallation(env: Env, installationId: number): Promise<GitHubClient> {
-    const privateKey = await importPKCS8(env.GITHUB_PRIVATE_KEY.replace(/\\n/g, "\n"), "RS256");
+    const privateKey = await importGitHubPrivateKey(env.GITHUB_PRIVATE_KEY);
     const now = Math.floor(Date.now() / 1000);
     const jwt = await new SignJWT({})
       .setProtectedHeader({ alg: "RS256" })
