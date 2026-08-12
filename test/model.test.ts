@@ -28,6 +28,7 @@ const event: RepositoryEvent = {
     body: "",
     state: "open",
     author: "author",
+    assignees: [],
     labels: [],
     updatedAt: "2026-08-12T00:00:00Z",
   },
@@ -104,6 +105,24 @@ describe("normalizeModelDecision", () => {
       issueKind: "bug",
       areaLabels: ["area/client"],
     });
+  });
+
+  it("preserves native metadata even before its mirror label arrives", async () => {
+    const configuredEvent: RepositoryEvent = {
+      ...event,
+      item: {
+        ...event.item,
+        nativeIssueType: "Bug",
+        nativePriority: "High",
+      },
+    };
+    const decision = await normalizeModelDecision(
+      { ...raw, relationships: [] },
+      configuredEvent,
+      config,
+      [],
+    );
+    expect(decision.classification).toMatchObject({ issueKind: "bug", priority: "P1" });
   });
 });
 

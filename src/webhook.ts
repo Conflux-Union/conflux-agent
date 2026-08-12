@@ -67,9 +67,13 @@ export function parseWebhook(eventName: string, deliveryId: string, payload: Jso
       authorAssociation: rawItem.author_association
         ? String(rawItem.author_association)
         : undefined,
+      assignees: Array.isArray(rawItem.assignees)
+        ? rawItem.assignees.map((assignee: JsonObject) => String(assignee.login))
+        : [],
       labels: Array.isArray(rawItem.labels)
         ? rawItem.labels.map((label: JsonObject) => String(label.name))
         : [],
+      nativeIssueType: rawItem.type?.name ? String(rawItem.type.name) : undefined,
       updatedAt: String(rawItem.updated_at ?? new Date().toISOString()),
       headSha: payload.pull_request?.head?.sha
         ? String(payload.pull_request.head.sha)

@@ -32,6 +32,7 @@ const event: RepositoryEvent = {
     body: "",
     state: "open",
     author: "author",
+    assignees: [],
     labels: [],
     updatedAt: "2026-08-12T00:00:00Z",
     baseBranch: "main",
@@ -112,7 +113,7 @@ describe("evaluateActions", () => {
     expect(result.pending[0]?.requiresApproval).toBe(true);
   });
 
-  it("requires deterministic ownership evidence before assignment", () => {
+  it("requires a uniquely configured classified area before assignment", () => {
     const assignment: ProposedAction = {
       id: "assign",
       kind: "set_assignees",
@@ -135,11 +136,16 @@ describe("evaluateActions", () => {
     const pending = evaluateActions([assignment], event, assignmentConfig);
     expect(pending.pending).toHaveLength(1);
 
-    const evidenced = evaluateActions(
-      [{ ...assignment, evidence: [{ kind: "file", reference: "src/Fix.ts" }] }],
+    const classified = evaluateActions(
+      [
+        {
+          ...assignment,
+          parameters: { assignees: ["Trirrin"], areaLabels: ["area/client"] },
+        },
+      ],
       event,
       assignmentConfig,
     );
-    expect(evidenced.executable).toHaveLength(1);
+    expect(classified.executable).toHaveLength(1);
   });
 });

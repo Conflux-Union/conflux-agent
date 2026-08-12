@@ -50,7 +50,10 @@ export interface RepositoryEvent {
     state: "open" | "closed";
     author: string;
     authorAssociation?: string;
+    assignees: string[];
     labels: string[];
+    nativeIssueType?: string;
+    nativePriority?: string;
     updatedAt: string;
     headSha?: string;
     baseBranch?: string;

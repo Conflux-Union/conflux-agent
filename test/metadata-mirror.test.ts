@@ -56,6 +56,7 @@ function event(labels: string[]): RepositoryEvent {
       body: "",
       state: "open",
       author: "author",
+      assignees: [],
       labels,
       updatedAt: "2026-08-12T00:00:00Z",
     },

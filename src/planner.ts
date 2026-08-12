@@ -427,6 +427,30 @@ export async function planActions(
     });
   }
 
+  const ownedAreas = config.areas.filter(
+    (area) =>
+      decision.classification.areaLabels.includes(area.label) && area.assignees.length === 1,
+  );
+  const owners = [...new Set(ownedAreas.flatMap((area) => area.assignees))];
+  if (
+    event.item.kind === "issue" &&
+    owners.length === 1 &&
+    !event.item.assignees.includes(owners[0]!)
+  ) {
+    const areaLabels = ownedAreas
+      .filter((area) => area.assignees[0] === owners[0])
+      .map((area) => area.label);
+    actions.push({
+      id: await id(event, "set_assignees", { assignees: owners, areaLabels }),
+      kind: "set_assignees",
+      target: target(event),
+      parameters: { assignees: owners, areaLabels },
+      confidence: 0.95,
+      evidence: [],
+      rationale: `Assign the sole configured owner for ${areaLabels.join(", ")}`,
+    });
+  }
+
   for (const relationship of decision.relationships) {
     const closing = relationshipForClosing(event, relationship);
     if (!closing) continue;

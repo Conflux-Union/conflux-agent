@@ -161,12 +161,22 @@ export async function normalizeModelDecision(
   const allowedTypes = new Set(Object.keys(config.metadata.issueTypes));
   const allowedPriorities = new Set(Object.keys(config.metadata.priorities));
   const allowedAreas = new Set(config.areas.map((area) => area.label));
-  const existingType = Object.entries(config.metadata.issueTypes).find(([, mapping]) =>
-    event.item.labels.includes(mapping.label),
-  )?.[0];
-  const existingPriority = Object.entries(config.metadata.priorities).find(([, mapping]) =>
-    event.item.labels.includes(mapping.label),
-  )?.[0];
+  const existingType =
+    Object.entries(config.metadata.issueTypes).find(([, mapping]) =>
+      event.item.labels.includes(mapping.label),
+    )?.[0] ??
+    Object.entries(config.metadata.issueTypes).find(
+      ([, mapping]) =>
+        mapping.fieldValue.toLowerCase() === event.item.nativeIssueType?.toLowerCase(),
+    )?.[0];
+  const existingPriority =
+    Object.entries(config.metadata.priorities).find(([, mapping]) =>
+      event.item.labels.includes(mapping.label),
+    )?.[0] ??
+    Object.entries(config.metadata.priorities).find(
+      ([, mapping]) =>
+        mapping.fieldValue.toLowerCase() === event.item.nativePriority?.toLowerCase(),
+    )?.[0];
   const existingAreas = config.areas
     .filter((area) => event.item.labels.includes(area.label))
     .map((area) => area.label);

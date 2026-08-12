@@ -185,6 +185,29 @@ export class RepositoryThreadAgent extends Agent<Env, ThreadState> {
         return;
       }
 
+      const hasManagedPriority = Object.values(config.metadata.priorities).some((mapping) =>
+        event.item.labels.includes(mapping.label),
+      );
+      if (
+        event.item.kind === "issue" &&
+        config.metadata.priorityFieldId &&
+        !hasManagedPriority
+      ) {
+        const values = await github.listIssueFieldValues(
+          event.repository.owner,
+          event.repository.repo,
+          event.item.number,
+        );
+        const priority = values.find(
+          (value) => Number(value.issue_field_id) === config.metadata.priorityFieldId,
+        );
+        event.item.nativePriority = priority?.single_select_option?.name
+          ? String(priority.single_select_option.name)
+          : priority?.value != null
+            ? String(priority.value)
+            : undefined;
+      }
+
       const { candidates, cachedRelationships } = await this.collectCandidates(
         event,
         github,

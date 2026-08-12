@@ -28,6 +28,7 @@ const event: RepositoryEvent = {
     body: "",
     state: "open",
     author: "reporter",
+    assignees: [],
     labels: [],
     updatedAt: "2026-08-12T00:00:00Z",
   },
@@ -66,6 +67,29 @@ describe("planActions", () => {
     const link = actions.find((action) => action.kind === "link_closing_issue");
     expect(link?.target.number).toBe(4);
     expect(link?.parameters).toMatchObject({ issueNumber: 9, baseBranch: "main" });
+  });
+
+  it("assigns the sole configured owner for a classified area", async () => {
+    const ownershipConfig = repositoryConfigSchema.parse({
+      ...config,
+      areas: [{ label: "area/client", paths: ["src/**"], assignees: ["Trirrin"] }],
+      autonomy: { automatic: { assignment: true } },
+    });
+    const ownedDecision: AgentDecision = {
+      ...decision,
+      relationships: [],
+      classification: { areaLabels: ["area/client"] },
+    };
+    const actions = await planActions(
+      event,
+      INITIAL_THREAD_STATE,
+      ownedDecision,
+      ownershipConfig,
+    );
+    expect(actions.find((action) => action.kind === "set_assignees")?.parameters).toEqual({
+      assignees: ["Trirrin"],
+      areaLabels: ["area/client"],
+    });
   });
 
   it("always targets the current pull request when it resolves an issue", async () => {

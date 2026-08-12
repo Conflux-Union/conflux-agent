@@ -109,6 +109,12 @@ export class GitHubClient {
     return this.request<Array<Record<string, any>>>(`/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`);
   }
 
+  listIssueFieldValues(owner: string, repo: string, number: number) {
+    return this.request<Array<Record<string, any>>>(
+      `/repos/${owner}/${repo}/issues/${number}/issue-field-values`,
+    );
+  }
+
   searchIssuesAndPulls(query: string) {
     return this.request<{
       items: Array<Record<string, any>>;

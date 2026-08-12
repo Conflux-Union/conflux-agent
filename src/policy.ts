@@ -97,14 +97,16 @@ export function evaluateActions(
     }
     if (action.kind === "set_assignees") {
       const assignees = action.parameters.assignees as string[] | undefined;
-      const fileEvidence = action.evidence.filter((entry) => entry.kind === "file");
-      const uniquelyConfigured = config.areas.some(
-        (area) =>
-          area.assignees.length === 1 &&
-          assignees?.length === 1 &&
-          area.assignees[0] === assignees[0] &&
-          fileEvidence.some((entry) => area.paths.some((path) => pathMatches(path, entry.reference))),
+      const areaLabels = action.parameters.areaLabels as string[] | undefined;
+      const matchingAreas = config.areas.filter(
+        (area) => areaLabels?.includes(area.label),
       );
+      const uniquelyConfigured =
+        assignees?.length === 1 &&
+        matchingAreas.length > 0 &&
+        matchingAreas.every(
+          (area) => area.assignees.length === 1 && area.assignees[0] === assignees[0],
+        );
       if (!uniquelyConfigured) {
         result.pending.push({ ...action, requiresApproval: true });
         continue;
@@ -132,15 +134,6 @@ export function evaluateActions(
     result.executable.push({ ...action, requiresApproval: false });
   }
   return result;
-}
-
-function pathMatches(pattern: string, path: string): boolean {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replaceAll("**", "\0")
-    .replaceAll("*", "[^/]*")
-    .replaceAll("\0", ".*");
-  return new RegExp(`^${escaped}$`).test(path);
 }
 
 export function mayApprove(event: RepositoryEvent, config: RepositoryConfig): boolean {
