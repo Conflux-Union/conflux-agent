@@ -1,10 +1,10 @@
 # Conflux Agent
 
-Conflux Agent is a stateful GitHub maintenance agent for issues and pull
-requests. It classifies repository work, synchronizes labels with native issue
-metadata, searches for related issues and pull requests, maintains native
-closing relationships, and holds natural multi-turn conversations with
-reporters and maintainers.
+Conflux Agent is a stateful, model-driven GitHub maintenance agent for issues
+and pull requests. It explores repository code and history when needed,
+classifies repository work, synchronizes labels with native issue metadata,
+finds related issues and pull requests, maintains native closing relationships,
+and holds natural multi-turn conversations with reporters and maintainers.
 
 ## Architecture
 
@@ -16,8 +16,12 @@ reporters and maintainers.
   deduplication, action audit, and model usage.
 - Repository rules live in `.github/maintainer-agent.yml` in each installed
   repository. A missing or invalid file disables writes for that repository.
-- Model output is an untrusted proposal. Deterministic policy code validates
-  every GitHub mutation before execution.
+- The model controls a bounded read-only exploration loop. It can search code,
+  read files, list directories, inspect issues and pull requests, and inspect
+  path history before returning a decision.
+- Model output and tool calls are untrusted proposals. Read tools enforce
+  repository and size limits, while deterministic policy validates every
+  GitHub mutation before execution.
 - The model classifies affected areas but cannot select assignees. Assignment
   uses bounded recent commit history for configured area paths, requires a clear
   dominant committer, and verifies that GitHub allows assigning that user.
@@ -46,11 +50,10 @@ reporters and maintainers.
 - Native Type/Priority and label mirroring is deterministic and uses no model.
 - Only reporter, pull request author, maintainer, or explicit Agent mentions
   wake conversational analysis.
-- Each event receives a compact thread state plus incremental content.
-- Candidate search is limited before full issue, pull request, diff, and test
-  context is loaded.
-- Unchanged relationship comparisons are reused from D1 and omitted from later
-  model input.
+- Each event receives a compact thread state plus incremental content. The model
+  requests only the repository evidence needed for that turn.
+- Model turns, tool calls, and each tool result are independently bounded by
+  repository configuration.
 - The system prompt and tool contract remain a stable request prefix. Dynamic
   model responses bypass response caching; relationship comparisons use content
   hashes in D1.
@@ -83,7 +86,7 @@ to a Cloudflare AI Gateway Custom Provider without changing the core Agent.
 ## Repository configuration
 
 The installed repository owns its rules in `.github/maintainer-agent.yml`.
-Configuration names legal Type/Priority mappings, searchable repositories,
+Configuration names legal Type/Priority mappings, read-allowed repositories,
 area-to-path ownership, automatic action thresholds, disabled labels, and
-per-event model budgets. Fields without an existing legal candidate remain
-empty.
+per-event model and tool budgets. Fields without an existing legal candidate
+remain empty.

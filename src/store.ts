@@ -1,29 +1,6 @@
 import type { ProposedAction, RelationshipCandidate, RepositoryEvent } from "./domain";
 import { sha256 } from "./crypto";
 
-export interface SearchCandidate {
-  owner: string;
-  repo: string;
-  number: number;
-  kind: "issue" | "pull_request";
-  title: string;
-  summary: string;
-  state: string;
-  headSha?: string;
-  baseBranch?: string;
-  contentHash: string;
-}
-
-function searchTerms(value: string): string {
-  const terms = value
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}_-]+/gu, " ")
-    .split(/\s+/)
-    .filter((term) => term.length >= 2)
-    .slice(0, 12);
-  return terms.map((term) => `"${term.replace(/"/g, "")}"`).join(" OR ");
-}
-
 export class RepositoryStore {
   constructor(private readonly db: D1Database) {}
 
@@ -88,32 +65,14 @@ export class RepositoryStore {
     return contentHash;
   }
 
-  async search(event: RepositoryEvent, repositories: string[], limit: number): Promise<SearchCandidate[]> {
-    const query = searchTerms(`${event.item.title} ${event.item.body.slice(0, 2000)}`);
-    if (!query) return [];
-    const allowed = new Set([
-      `${event.repository.owner}/${event.repository.repo}`.toLowerCase(),
-      ...repositories.map((entry) => entry.toLowerCase()),
-    ]);
-    const result = await this.db
-      .prepare(
-        `SELECT i.owner, i.repo, i.number, i.kind, i.title, i.summary, i.state,
-                i.head_sha AS headSha, i.base_branch AS baseBranch, i.content_hash AS contentHash
-         FROM repository_items_fts f
-         JOIN repository_items i ON i.rowid = f.rowid
-         WHERE repository_items_fts MATCH ?
-           AND NOT (i.owner = ? AND i.repo = ? AND i.number = ?)
-         ORDER BY bm25(repository_items_fts)
-         LIMIT ?`,
-      )
-      .bind(query, event.repository.owner, event.repository.repo, event.item.number, limit * 3)
-      .all<SearchCandidate>();
-    return result.results.filter((candidate) => allowed.has(`${candidate.owner}/${candidate.repo}`.toLowerCase())).slice(0, limit);
-  }
-
   async cachedRelationship(
     source: RepositoryEvent,
-    candidate: SearchCandidate,
+    candidate: {
+      owner: string;
+      repo: string;
+      number: number;
+      kind: "issue" | "pull_request";
+    },
     comparisonHash: string,
   ): Promise<RelationshipCandidate | null> {
     const row = await this.db
@@ -133,7 +92,11 @@ export class RepositoryStore {
         candidate.number,
         comparisonHash,
       )
-      .first<{ relationship: RelationshipCandidate["relationship"]; confidence: number; evidenceJson: string }>();
+      .first<{
+        relationship: RelationshipCandidate["relationship"];
+        confidence: number;
+        evidenceJson: string;
+      }>();
     if (!row) return null;
     return {
       owner: candidate.owner,

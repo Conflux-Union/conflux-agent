@@ -27,7 +27,6 @@ export const repositoryConfigSchema = z.object({
   search: z.object({
     repositories: z.array(z.string()).default([]),
     maxCandidates: z.number().int().min(1).max(20).default(10),
-    maxDeepComparisons: z.number().int().min(1).max(5).default(3),
   }),
   metadata: z.object({
     issueTypes: z.record(z.string(), metadataMappingSchema).default({}),
@@ -66,7 +65,9 @@ export const repositoryConfigSchema = z.object({
       .default(["OWNER", "MEMBER", "COLLABORATOR"]),
   }),
   budgets: z.object({
-    maxModelCallsPerEvent: z.number().int().min(1).max(4).default(2),
+    maxModelCallsPerEvent: z.number().int().min(1).max(8).default(4),
+    maxToolCallsPerEvent: z.number().int().min(1).max(20).default(8),
+    maxToolResultCharacters: z.number().int().min(1000).max(30_000).default(12_000),
     maxInputCharacters: z.number().int().min(1000).max(100_000).default(30_000),
     maxOutputTokens: z.number().int().min(100).max(8000).default(2500),
   }),

@@ -101,6 +101,7 @@ export class GitHubClient {
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(GitHubClient.headers(this.env, this.token));
+    new Headers(init.headers).forEach((value, name) => headers.set(name, value));
     if (init.body) headers.set("Content-Type", "application/json");
     const response = await fetch(path.startsWith("https://") ? path : `https://api.github.com${path}`, {
       ...init,
@@ -154,6 +155,22 @@ export class GitHubClient {
   listCommitsForPath(owner: string, repo: string, path: string, perPage: number) {
     return this.request<Array<Record<string, any>>>(
       `/repos/${owner}/${repo}/commits?path=${encodeURIComponent(path)}&per_page=${perPage}`,
+    );
+  }
+
+  searchCode(owner: string, repo: string, query: string, path?: string) {
+    const scope = [`repo:${owner}/${repo}`, path ? `path:${path}` : ""].filter(Boolean).join(" ");
+    return this.request<Record<string, any>>(
+      `/search/code?q=${encodeURIComponent(`${query} ${scope}`)}&per_page=20`,
+      { headers: { Accept: "application/vnd.github.text-match+json" } },
+    );
+  }
+
+  getContent(owner: string, repo: string, path: string, ref?: string) {
+    const suffix = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+    const encodedPath = path ? `/${path.split("/").map(encodeURIComponent).join("/")}` : "";
+    return this.request<Record<string, any> | Array<Record<string, any>>>(
+      `/repos/${owner}/${repo}/contents${encodedPath}${suffix}`,
     );
   }
 

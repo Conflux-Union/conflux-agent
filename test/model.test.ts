@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { repositoryConfigSchema } from "../src/config";
 import type { RepositoryEvent } from "../src/domain";
-import { extractTrustedImageUrls, normalizeModelDecision } from "../src/model";
+import {
+  extractTrustedImageUrls,
+  ModelProvider,
+  normalizeModelDecision,
+  type ModelToolExecutor,
+} from "../src/model";
+import type { Env } from "../src/env";
 
 const config = repositoryConfigSchema.parse({
   version: 1,
@@ -178,5 +184,133 @@ describe("extractTrustedImageUrls", () => {
         "https://example.com/private.png https://github.com/user-attachments/assets/abc-123",
       ]),
     ).toEqual(["https://github.com/user-attachments/assets/abc-123"]);
+  });
+});
+
+describe("ModelProvider", () => {
+  it("lets the model explore with tools before returning its decision", async () => {
+    const requests: Array<Record<string, any>> = [];
+    const responses = [
+      {
+        choices: [
+          {
+            message: {
+              content: null,
+              reasoning_content: "I need to find the implementation first.",
+              tool_calls: [
+                {
+                  id: "call-1",
+                  type: "function",
+                  function: {
+                    name: "search_code",
+                    arguments: JSON.stringify({ query: "renderMinimap" }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 100, completion_tokens: 20 },
+      },
+      {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                ...raw,
+                disposition: "reply",
+                reply: "The minimap is rendered by src/client/map.ts.",
+                relationships: [],
+              }),
+            },
+          },
+        ],
+        usage: { prompt_tokens: 120, completion_tokens: 30 },
+      },
+    ];
+    const request = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify(responses.shift()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+    const tools: ModelToolExecutor = {
+      definitions: [
+        {
+          type: "function",
+          function: {
+            name: "search_code",
+            description: "Search repository code",
+            parameters: {
+              type: "object",
+              properties: { query: { type: "string" } },
+              required: ["query"],
+              additionalProperties: false,
+            },
+          },
+        },
+      ],
+      async execute(call) {
+        calls.push(call);
+        return { matches: [{ path: "src/client/map.ts" }] };
+      },
+      candidates: () => [],
+      cachedRelationships: () => [],
+    };
+    const provider = new ModelProvider(
+      {
+        MODEL_BASE_URL: "https://model.example/v1",
+        MODEL_NAME: "mimo-v2.5",
+        MODEL_API_KEY: "secret",
+        PROMPT_VERSION: "test",
+      } as Env,
+      request,
+    );
+
+    const result = await provider.decide({
+      event,
+      state: {
+        contentVersion: "",
+        summary: "",
+        knownFacts: [],
+        unresolvedQuestions: [],
+        classification: { areaLabels: [] },
+        relatedItems: [],
+        pendingActions: [],
+        conversationStatus: "active",
+        manualOverrides: [],
+        tokenUsage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+          modelCalls: 0,
+        },
+      },
+      config: repositoryConfigSchema.parse({
+        ...config,
+        budgets: { maxModelCallsPerEvent: 3 },
+      }),
+      tools,
+    });
+
+    expect(calls).toEqual([{ name: "search_code", arguments: { query: "renderMinimap" } }]);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.tools).toEqual(tools.definitions);
+    expect(requests[1]?.messages.slice(-2)).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        reasoning_content: "I need to find the implementation first.",
+        tool_calls: expect.any(Array),
+      }),
+      {
+        role: "tool",
+        tool_call_id: "call-1",
+        content: JSON.stringify({ matches: [{ path: "src/client/map.ts" }] }),
+      },
+    ]);
+    expect(result.decision.reply).toContain("src/client/map.ts");
+    expect(result.usage).toMatchObject({ modelCalls: 2, inputTokens: 220, outputTokens: 50 });
   });
 });
